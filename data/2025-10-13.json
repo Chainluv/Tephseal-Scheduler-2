@@ -1,0 +1,44 @@
+{
+  "dealer": "Murdock Hyundai Murray (890090)",
+  "weekStart": "2025-10-13",
+  "employees": [
+    {
+      "id": "e1",
+      "name": "Kody O Edwards 49416"
+    },
+    {
+      "id": "e2",
+      "name": "Derrick W. Gore 48873"
+    },
+    {
+      "id": "e3",
+      "name": "Brandon Moye 45138"
+    },
+    {
+      "id": "e4",
+      "name": "Steven B Ridenour 49788"
+    }
+  ],
+  "schedule": {
+    "e2": {
+      "mon": "8AM–8PM",
+      "tue": "8AM–6PM",
+      "wed": "8AM–6PM",
+      "thu": "8AM–8PM",
+      "fri": "8AM–8PM",
+      "sat": "8AM–8PM"
+    },
+    "e1": {
+      "wed": "1PM–8PM",
+      "thu": "11AM–7PM",
+      "sat": "10AM–4:30PM"
+    },
+    "e4": {
+      "mon": "10AM–5PM",
+      "tue": "1PM–8PM",
+      "wed": "11AM–7PM",
+      "fri": "11AM–7PM",
+      "sat": "11AM–7PM"
+    }
+  }
+}
