@@ -1,11 +1,11 @@
-// app.js — fixed: single `days`, proper JSX styles, correct week math.
-// Manager (/edit.html) shows dropdowns + name edit + Share/Download.
-// Viewer (/) is read-only.
+// app.js — Complete version (Tephseal Scheduler 2025-10-12 update)
+// Manager (/edit.html) = editable
+// Viewer (/) = read-only
 
 const MODE = window.__MODE__ || "view";
-const DEFAULT_WEEK_ISO = "2025-10-13"; // Monday
+const DEFAULT_WEEK_ISO = "2025-10-13"; // Monday start
 
-// ---------- date helpers (local, no timezone shift) ----------
+// ---------- date helpers ----------
 const pad = (n) => (n < 10 ? "0" : "") + n;
 function fromISO(iso) {
   const [y, m, d] = iso.split("-").map(Number);
@@ -15,9 +15,8 @@ function toISO(d) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 function startOfWeekLocal(d) {
-  // Monday as start
   const dt = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  const dow = (dt.getDay() + 6) % 7; // 0 Mon .. 6 Sun
+  const dow = (dt.getDay() + 6) % 7; // Monday=0
   dt.setDate(dt.getDate() - dow);
   dt.setHours(0, 0, 0, 0);
   return dt;
@@ -43,7 +42,7 @@ const days = [
 ];
 const ALL_KEY = "all";
 
-// ---------- shifts ----------
+// ---------- shift helpers ----------
 function parseHours(label) {
   if (!label || label === "Off") return 0;
   const [a, b] = label.split("–");
@@ -85,7 +84,7 @@ function generateShiftOptions() {
 }
 const SHIFT_OPTIONS = generateShiftOptions();
 
-// ---------- data ----------
+// ---------- load data ----------
 async function loadWeekData(weekISO) {
   try {
     const r = await fetch(`./data/${weekISO}.json`, { cache: "no-store" });
@@ -101,75 +100,35 @@ async function loadWeekData(weekISO) {
         { id: "e3", name: "Brandon Moye 45138" },
         { id: "e4", name: "Steven B Ridenour 49788" },
       ],
-      schedule: {
-        e1: {
-          mon: "Off",
-          tue: "Off",
-          wed: "1PM–8PM",
-          thu: "11AM–7PM",
-          fri: "Off",
-          sat: "10AM–4PM",
-          sun: "Off",
-        },
-        e2: {
-          mon: "8AM–8PM",
-          tue: "8AM–4PM",
-          wed: "8AM–4PM",
-          thu: "8AM–4PM",
-          fri: "8AM–4PM",
-          sat: "8AM–4PM",
-          sun: "Off",
-        },
-        e3: {
-          mon: "Off",
-          tue: "1PM–8PM",
-          wed: "Off",
-          thu: "1PM–8PM",
-          fri: "1PM–8PM",
-          sat: "1PM–8PM",
-          sun: "Off",
-        },
-        e4: {
-          mon: "10AM–5PM",
-          tue: "11AM–7PM",
-          wed: "11AM–7PM",
-          thu: "Off",
-          fri: "11AM–7PM",
-          sat: "1PM–8PM",
-          sun: "Off",
-        },
-      },
+      schedule: {},
     };
   }
 }
 
 const safeName = (s) => (s || "").replace(/\s\d{4,6}$/, "");
 
-// ---------- week from URL + nav ----------
+// ---------- week query ----------
 function useQueryWeek() {
   const url = new URL(location.href);
   const param = url.searchParams.get("week");
   let baseISO = isISODate(param) ? param : DEFAULT_WEEK_ISO;
-
-  // normalize to local Monday
   const mon = startOfWeekLocal(fromISO(baseISO));
   const weekISO = toISO(mon);
 
   const go = (delta) => {
     const d = startOfWeekLocal(fromISO(weekISO));
-    d.setDate(d.getDate() + delta * 7); // -1 back, +1 forward
+    d.setDate(d.getDate() + delta * 7);
     url.searchParams.set("week", toISO(d));
     location.href = url.toString();
   };
   return [weekISO, go];
 }
 
-// ---------- App ----------
+// ---------- main app ----------
 function App() {
   const [weekISO, navWeek] = useQueryWeek();
   const [data, setData] = React.useState(null);
   const [active, setActive] = React.useState(ALL_KEY);
-
   const [serverPass, setServerPass] = React.useState(null);
   const [isAuthed, setIsAuthed] = React.useState(MODE === "view");
   const [pwd, setPwd] = React.useState("");
@@ -189,16 +148,9 @@ function App() {
   }, []);
 
   const canEdit = MODE === "edit" && isAuthed;
-
   if (MODE === "edit" && !isAuthed) {
     return (
-      <div
-        style={{
-          display: "grid",
-          placeItems: "center",
-          height: "100vh",
-        }}
-      >
+      <div style={{ display: "grid", placeItems: "center", height: "100vh" }}>
         <div
           style={{
             border: "1px solid #e5e7eb",
@@ -245,7 +197,6 @@ function App() {
 
   const { dealer, employees, schedule } = data;
   const weekDate = fromISO(weekISO);
-
   const totalsByEmp = Object.fromEntries(
     employees.map((e) => [
       e.id,
@@ -254,30 +205,27 @@ function App() {
   );
   const weekTotal = Object.values(totalsByEmp).reduce((a, b) => a + b, 0);
 
-  const setShift = (empId, dayKey, val) => {
-    setData((prev) => ({
-      ...prev,
-      schedule: {
-        ...prev.schedule,
-        [empId]: { ...(prev.schedule[empId] || {}), [dayKey]: val },
-      },
+  const setShift = (id, day, val) => {
+    setData((p) => ({
+      ...p,
+      schedule: { ...p.schedule, [id]: { ...(p.schedule[id] || {}), [day]: val } },
     }));
   };
-  const setEmployeeName = (empId, newName) => {
-    setData((prev) => ({
-      ...prev,
-      employees: prev.employees.map((e) =>
-        e.id === empId ? { ...e, name: newName } : e
-      ),
+  const setEmployeeName = (id, newName) => {
+    setData((p) => ({
+      ...p,
+      employees: p.employees.map((e) => (e.id === id ? { ...e, name: newName } : e)),
     }));
   };
 
+  // ---------- save & share ----------
   async function saveCurrent(targetWeekISO) {
     setSaving(true);
     try {
+      const effectiveWeek = targetWeekISO || weekISO;
       const payload = {
-        weekISO: targetWeekISO || weekISO,
-        data: { ...data, weekStart: targetWeekISO || weekISO },
+        weekISO: effectiveWeek,
+        data: { ...data, weekStart: effectiveWeek },
       };
       const res = await fetch("/api/save", {
         method: "POST",
@@ -288,47 +236,37 @@ function App() {
         const t = await res.text();
         throw new Error(t || "Save failed");
       }
-      alert("Saved!");
       if (targetWeekISO && targetWeekISO !== weekISO) {
         location.href = `?week=${targetWeekISO}`;
+        return true;
       }
+      return true;
     } catch (e) {
-      alert("Error: " + e.message);
+      alert("Error saving: " + e.message);
+      return false;
     } finally {
       setSaving(false);
     }
   }
 
-  function duplicateToNextWeek(copyShifts) {
-    const d = startOfWeekLocal(fromISO(weekISO));
-    d.setDate(d.getDate() + 7);
-    const nextISO = toISO(d);
-
-    const nextData = { ...data, weekStart: nextISO, schedule: {} };
-    for (const e of employees) {
-      nextData.schedule[e.id] = {};
-      for (const day of days) {
-        nextData.schedule[e.id][day.key] = copyShifts
-          ? schedule[e.id]?.[day.key] || "Off"
-          : "Off";
-      }
-    }
-    setData(nextData);
-    saveCurrent(nextISO);
-  }
-
-  async function shareLinkForWeek(iso) {
-    const url = `${location.origin}/?week=${iso}`;
+  async function shareLinkForWeek(effectiveISO) {
+    const ok = await saveCurrent(effectiveISO);
+    if (!ok) return;
+    const url = `${location.origin}/?week=${effectiveISO || weekISO}`;
     try {
       if (navigator.share) {
         await navigator.share({ title: "Tephseal Schedule", url });
-      } else if (navigator.clipboard) {
-        await navigator.clipboard.writeText(url);
-        alert("Link copied:\n" + url);
-      } else {
-        prompt("Copy this link:", url);
+        return;
       }
     } catch {}
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(url);
+        alert("Link copied:\n" + url);
+        return;
+      }
+    } catch {}
+    window.open(url, "_blank");
   }
 
   function downloadJSON() {
@@ -349,16 +287,7 @@ function App() {
         <div className="bar">
           <div className="logo">S</div>
           <div style={{ flex: 1 }}>
-            <div
-              style={{
-                fontSize: 12,
-                color: "#64748b",
-                textTransform: "uppercase",
-                letterSpacing: 1,
-              }}
-            >
-              Dealer
-            </div>
+            <div style={{ fontSize: 12, color: "#64748b" }}>Dealer</div>
             <div style={{ fontWeight: 700 }}>{dealer}</div>
             <div style={{ fontSize: 12, color: "#64748b" }}>
               Week of{" "}
@@ -378,24 +307,20 @@ function App() {
             </button>
             {canEdit && (
               <>
-                <button
-                  className="btn"
-                  onClick={() => saveCurrent()}
-                  disabled={saving}
-                >
+                <button className="btn" onClick={() => saveCurrent()} disabled={saving}>
                   {saving ? "Saving…" : "Save"}
                 </button>
-                <button className="btn" onClick={() => duplicateToNextWeek(false)}>
-                  Save as Next Week
-                </button>
-                <button className="btn" onClick={() => duplicateToNextWeek(true)}>
-                  Save Next (Copy Shifts)
-                </button>
                 <button className="btn" onClick={() => shareLinkForWeek(weekISO)}>
-                  Share link
+                  Share Link
                 </button>
                 <button className="btn" onClick={downloadJSON}>
                   Download JSON
+                </button>
+                <button
+                  className="btn"
+                  onClick={() => window.open(`/?week=${weekISO}`, "_blank")}
+                >
+                  Open Viewer
                 </button>
               </>
             )}
@@ -422,9 +347,7 @@ function App() {
             onClick={() => setActive(d.key)}
           >
             <div>{d.label}</div>
-            <div style={{ opacity: 0.8, fontSize: 10 }}>
-              {fmtDay(weekISO, d.off)}
-            </div>
+            <div style={{ opacity: 0.8, fontSize: 10 }}>{fmtDay(weekISO, d.off)}</div>
           </div>
         ))}
       </div>
@@ -437,6 +360,7 @@ function App() {
       {Tabs}
 
       <div className="container">
+        {/* ALL-WEEK TABLE */}
         {active === ALL_KEY ? (
           <div className="card" style={{ marginTop: 16 }}>
             <div className="head">Full Week</div>
@@ -444,7 +368,7 @@ function App() {
               <table>
                 <thead>
                   <tr>
-                    <th className="sticky-left">Employee</th>
+                    <th>Employee</th>
                     {days.map((d) => (
                       <th key={d.key}>
                         {d.label}{" "}
@@ -457,19 +381,9 @@ function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {employees.map((e, idx) => (
-                    <tr
-                      key={e.id}
-                      style={{ background: idx % 2 ? "#f8fafc" : "#fff" }}
-                    >
-                      <td
-                        className="sticky-left"
-                        style={{
-                          padding: 12,
-                          borderTop: "1px solid #f1f5f9",
-                          fontWeight: 600,
-                        }}
-                      >
+                  {employees.map((e) => (
+                    <tr key={e.id}>
+                      <td style={{ fontWeight: 600 }}>
                         {canEdit ? (
                           <input
                             value={e.name}
@@ -498,9 +412,7 @@ function App() {
                               }}
                             >
                               {SHIFT_OPTIONS.map((opt) => (
-                                <option key={opt} value={opt}>
-                                  {opt}
-                                </option>
+                                <option key={opt}>{opt}</option>
                               ))}
                             </select>
                           ) : (
@@ -520,6 +432,7 @@ function App() {
             </div>
           </div>
         ) : (
+          // SINGLE-DAY VIEW
           <div style={{ display: "grid", gap: 12, marginTop: 16 }}>
             {employees.map((e) => (
               <div key={e.id} className="card">
@@ -553,9 +466,7 @@ function App() {
                         }}
                       >
                         {SHIFT_OPTIONS.map((opt) => (
-                          <option key={opt} value={opt}>
-                            {opt}
-                          </option>
+                          <option key={opt}>{opt}</option>
                         ))}
                       </select>
                     ) : (
@@ -573,25 +484,10 @@ function App() {
                 </div>
               </div>
             ))}
-            <div
-              style={{
-                textAlign: "right",
-                color: "#475569",
-                fontSize: 14,
-                paddingBottom: 24,
-              }}
-            >
-              Day total:{" "}
-              <span style={{ fontWeight: 700 }}>
-                {employees.reduce(
-                  (acc, e) => acc + parseHours(schedule[e.id]?.[active]),
-                  0
-                )}
-              </span>
-            </div>
           </div>
         )}
 
+        {/* WEEKLY TOTALS */}
         <div className="card" style={{ padding: 16, margin: "16px 0 48px" }}>
           <div style={{ fontWeight: 700, marginBottom: 8 }}>Weekly Totals</div>
           {employees.map((e) => (
@@ -607,16 +503,7 @@ function App() {
                 background: "#fff",
               }}
             >
-              <div
-                style={{
-                  marginRight: 12,
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {safeName(e.name)}
-              </div>
+              <div>{safeName(e.name)}</div>
               <div style={{ fontWeight: 800 }}>{totalsByEmp[e.id]}</div>
             </div>
           ))}
