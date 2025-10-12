@@ -12,7 +12,7 @@
     },
     {
       "id": "e3",
-      "name": "Brandon Moye 45138"
+      "name": "James Murphy "
     },
     {
       "id": "e4",
@@ -39,6 +39,9 @@
       "wed": "11AM–7PM",
       "fri": "11AM–7PM",
       "sat": "11AM–7PM"
+    },
+    "e3": {
+      "mon": "8AM–4:30PM"
     }
   }
 }
