@@ -12,18 +12,18 @@
     },
     {
       "id": "e3",
-      "name": "Brandon Moye 45138"
+      "name": "Elias J. Pope"
     },
     {
       "id": "e4",
-      "name": "Steven B Ridenour 49788"
+      "name": "Alexis Villasenor"
     }
   ],
   "schedule": {
     "e2": {
       "mon": "8AM–8PM",
-      "tue": "8AM–6PM",
-      "wed": "8AM–6PM",
+      "tue": "8AM–7PM",
+      "wed": "8AM–5PM",
       "thu": "8AM–8PM",
       "fri": "8AM–8PM",
       "sat": "8AM–8PM"
@@ -34,14 +34,20 @@
       "sat": "10AM–4:30PM"
     },
     "e4": {
-      "mon": "10AM–5PM",
-      "tue": "1PM–8PM",
-      "wed": "11AM–7PM",
-      "fri": "11AM–7PM",
-      "sat": "11AM–7PM"
+      "mon": "10AM–4PM",
+      "tue": "10AM–4PM",
+      "wed": "Off",
+      "fri": "10AM–4PM",
+      "sat": "10AM–4PM",
+      "thu": "10AM–4PM"
     },
     "e3": {
-      "mon": "8AM–5:30PM"
+      "mon": "1PM–8PM",
+      "tue": "1PM–8PM",
+      "wed": "1PM–8PM",
+      "thu": "Off",
+      "fri": "1PM–8PM",
+      "sat": "1PM–8PM"
     }
   }
 }
