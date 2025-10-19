@@ -21,31 +21,33 @@
   ],
   "schedule": {
     "e2": {
-      "mon": "8AM–8PM",
-      "tue": "8AM–7PM",
-      "wed": "8AM–5PM",
-      "thu": "8AM–8PM",
-      "fri": "8AM–8PM",
+      "mon": "Off",
+      "tue": "8AM–8PM",
+      "wed": "8AM–4PM",
+      "thu": "8AM–4PM",
+      "fri": "8AM–5PM",
       "sat": "8AM–8PM"
     },
     "e1": {
-      "wed": "1PM–8PM",
-      "thu": "11AM–7PM",
-      "sat": "10AM–4:30PM"
+      "wed": "11AM–8PM",
+      "thu": "11AM–8PM",
+      "sat": "10AM–4:30PM",
+      "mon": "8:30AM–6PM",
+      "fri": "11AM–8PM"
     },
     "e4": {
       "mon": "10AM–4PM",
       "tue": "10AM–4PM",
-      "wed": "Off",
+      "wed": "10AM–4PM",
       "fri": "10AM–4PM",
-      "sat": "10AM–4PM",
+      "sat": "Off",
       "thu": "10AM–4PM"
     },
     "e3": {
       "mon": "1PM–8PM",
-      "tue": "1PM–8PM",
+      "tue": "Off",
       "wed": "1PM–8PM",
-      "thu": "Off",
+      "thu": "1PM–8PM",
       "fri": "1PM–8PM",
       "sat": "1PM–8PM"
     }
