@@ -21,19 +21,19 @@
   ],
   "schedule": {
     "e2": {
-      "mon": "Off",
+      "mon": "8AM–8PM",
       "tue": "8AM–8PM",
-      "wed": "8AM–3PM",
-      "thu": "8AM–4PM",
-      "fri": "8AM–5PM",
+      "wed": "8AM–8PM",
+      "thu": "8AM–8PM",
+      "fri": "8AM–8PM",
       "sat": "8AM–8PM"
     },
     "e1": {
-      "wed": "10AM–8PM",
-      "thu": "10AM–8PM",
-      "sat": "10AM–4:30PM",
-      "mon": "8AM–6PM",
-      "fri": "10AM–8PM"
+      "wed": "Off",
+      "thu": "Off",
+      "sat": "Off",
+      "mon": "Off",
+      "fri": "Off"
     },
     "e4": {
       "mon": "10AM–4PM",
