@@ -21,11 +21,11 @@
   ],
   "schedule": {
     "e2": {
-      "mon": "8AM–5PM",
+      "mon": "Off",
       "tue": "8AM–6PM",
       "wed": "8AM–6PM",
       "thu": "8AM–6PM",
-      "fri": "8AM–7PM",
+      "fri": "8AM–6PM",
       "sat": "8AM–6PM"
     },
     "e1": {
