@@ -1,4 +1,4 @@
-// app.js — Tephseal Scheduler (clean manager editor: common dropdown + Custom button)
+// app.js — Tephseal Scheduler (manager editor + always-visible "+ Add employee" row)
 // Manager: /edit.html (editable, Save/Share)
 // Viewer:  / (read-only)
 // Default week: current week (Monday of today) unless ?week=YYYY-MM-DD
@@ -74,8 +74,8 @@ const START_TIMES = buildTimeList(EARLIEST, LATEST-STEP);
 function endTimesForStart(start){ return buildTimeList(start+STEP, LATEST); }
 function shiftLabel(start,end){ return `${timeLabelFromFloat(start)}–${timeLabelFromFloat(end)}`; }
 
-// Commonly used shifts (shown in the compact dropdown)
-// ✅ Added 4PM–8PM
+// Common shifts (compact)
+// ✅ Includes 4PM–8PM
 const COMMON_SHIFTS = [
   "Off",
   "8AM–5PM",
@@ -100,14 +100,14 @@ async function loadWeekData(weekISO, prevDataForFallback){
     return await fetchWeekJSON(weekISO);
   }catch{
     if(prevDataForFallback) return { ...prevDataForFallback, weekStart: weekISO };
+    // ✅ Default to 3 employees
     return {
       dealer:"Murdock Hyundai Murray (890090)",
       weekStart:weekISO,
       employees:[
-        { id:"e1", name:"Kody O Edwards 49416" },
-        { id:"e2", name:"Derrick W. Gore 48873" },
-        { id:"e3", name:"Brandon Moye 45138" },
-        { id:"e4", name:"Steven B Ridenour 49788" },
+        { id:"e1", name:"Tyler" },
+        { id:"e2", name:"Derrick" },
+        { id:"e3", name:"Jonathan" },
       ],
       schedule:{},
     };
@@ -317,6 +317,9 @@ function App(){
 
   const canEdit = MODE==="edit" && isAuthed;
 
+  // ✅ For the always-visible "+ row"
+  const [isAddingRow, setIsAddingRow] = React.useState(false);
+
   if(MODE==="edit" && !isAuthed){
     return (
       <div style={{display:"grid",placeItems:"center",height:"100vh",background:"linear-gradient(#f8fbff,#eef2ff)"}}>
@@ -357,14 +360,14 @@ function App(){
     setData(p=> ({...p, employees: p.employees.map(e=> e.id===empId? {...e, name:newName} : e)}));
   };
 
-  // ✅ Add Employee (manager only)
+  // ✅ Add Employee (used by the "+ row")
   const addEmployee = ()=>{
     setData(p=>{
       const used = new Set((p.employees||[]).map(e=>e.id));
       let n = (p.employees||[]).length + 1;
       let id = `e${n}`;
       while(used.has(id)){ n++; id = `e${n}`; }
-      const newEmp = { id, name: "New Employee" };
+      const newEmp = { id, name: "" }; // blank so you can type immediately
       return { ...p, employees: [...(p.employees||[]), newEmp] };
     });
   };
@@ -438,7 +441,6 @@ function App(){
               <>
                 <button className="btn" onClick={()=>saveCurrent()} disabled={saving}>{saving ? "Saving…" : "Save"}</button>
                 <button className="btn" onClick={()=>shareLinkForWeek(weekISO)}>Share Link</button>
-                <button className="btn" onClick={addEmployee}>+ Add Employee</button>
               </>
             )}
           </div>
@@ -513,6 +515,25 @@ function App(){
         @media (max-width: 520px){
           .empInput { max-width: 160px; }
         }
+        .addRowBtn{
+          width:100%;
+          display:flex;
+          align-items:center;
+          justify-content:center;
+          gap:10px;
+          padding:12px;
+          border-radius:16px;
+          border:1px dashed rgba(148,163,184,.6);
+          background:rgba(255,255,255,.75);
+          font-weight:950;
+          cursor:pointer;
+        }
+        .plusBubble{
+          width:34px;height:34px;border-radius:14px;
+          display:grid;place-items:center;
+          background:linear-gradient(135deg,#4f46e5,#06b6d4);
+          color:#fff;font-size:18px;font-weight:950;
+        }
       `}</style>
 
       {TopBar}
@@ -545,6 +566,7 @@ function App(){
                           <input
                             className="empInput"
                             value={e.name}
+                            placeholder="Employee name"
                             onChange={ev=>setEmployeeName(e.id, ev.target.value)}
                             style={{padding:"10px 12px",border:"1px solid rgba(226,232,240,.9)",borderRadius:14,fontWeight:900}}
                           />
@@ -567,6 +589,31 @@ function App(){
                       <td style={{textAlign:"right",fontWeight:950,fontSize:16}}>{totalsByEmp[e.id]}</td>
                     </tr>
                   ))}
+
+                  {/* ✅ Always-visible "+ Add employee" row (manager only) */}
+                  {canEdit && (
+                    <tr>
+                      <td colSpan={days.length + 2} style={{borderBottom:0, padding:14}}>
+                        {!isAddingRow ? (
+                          <button
+                            className="addRowBtn"
+                            onClick={()=>{
+                              addEmployee();
+                              setIsAddingRow(true);
+                              // next render shows the new row; we keep the add row visible below it
+                              setTimeout(()=>setIsAddingRow(false), 250);
+                            }}
+                            type="button"
+                          >
+                            <span className="plusBubble">+</span>
+                            Add another employee
+                          </button>
+                        ) : (
+                          <div style={{color:"#64748b",fontWeight:900}}>Adding…</div>
+                        )}
+                      </td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>
@@ -579,6 +626,7 @@ function App(){
                   {canEdit ? (
                     <input
                       value={e.name}
+                      placeholder="Employee name"
                       onChange={ev=>setEmployeeName(e.id, ev.target.value)}
                       style={{width:"100%",padding:"10px 12px",border:"1px solid rgba(226,232,240,.9)",borderRadius:14,fontWeight:950}}
                     />
@@ -604,6 +652,19 @@ function App(){
                 </div>
               </div>
             ))}
+
+            {/* ✅ Add employee button also shown in day view (manager only) */}
+            {canEdit && (
+              <button
+                className="addRowBtn"
+                onClick={()=> addEmployee()}
+                type="button"
+                style={{marginBottom:8}}
+              >
+                <span className="plusBubble">+</span>
+                Add another employee
+              </button>
+            )}
 
             <div style={{textAlign:"right",color:"#475569",fontSize:14,fontWeight:900,paddingBottom:10}}>
               Day total:{" "}
