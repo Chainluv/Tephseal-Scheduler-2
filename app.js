@@ -81,12 +81,17 @@ function shiftLabel(start, end){
   return `${timeLabelFromFloat(start)}–${timeLabelFromFloat(end)}`;
 }
 
-// Quick chips (common shifts) + still supports everything via Custom
+// Commonly used shifts (shown as quick buttons)
 const QUICK_SHIFTS = [
   "Off",
-  "8AM–4PM", "9AM–5PM", "10AM–6PM", "11AM–7PM", "12PM–8PM",
-  "2PM–8PM", "3PM–8PM", "4PM–8PM", "5PM–8PM", "6PM–8PM", "7PM–8PM",
+  "8AM–5PM",
+  "8AM–6PM",
+  "8AM–7PM",
   "8AM–8PM",
+  "11AM–7PM",
+  "11AM–8PM",
+  "12PM–7PM",
+  "12PM–8PM",
 ];
 
 // ---------- data loading ----------
