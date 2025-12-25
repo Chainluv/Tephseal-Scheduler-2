@@ -1,17 +1,13 @@
-// app.js — Tephseal Scheduler (mobile + shifts + current week default)
-// Fixes:
-// - Prevents horizontal "break" when zooming out (no sideways overflow)
-// - Header buttons wrap/scroll cleanly on mobile
-// - Shift dropdown includes ALL 30-min increments between 8:00AM and 8:00PM
-//   including 2–8, 3–8, 4–8, 5–8, 6–8, 7–8, etc.
-// - Default week = CURRENT week (Monday of today) unless ?week=YYYY-MM-DD is provided
+// app.js — Tephseal Scheduler (Option 3: Quick chips + Custom picker, 30-min)
+// Manager page: /edit.html (editable)
+// Viewer page:  / (read-only)
 //
-// Vercel env vars (Production):
+// Requires Vercel env vars for save/share:
 //   ADMIN_PASS, GITHUB_TOKEN, GITHUB_OWNER, GITHUB_REPO
 
 const MODE = window.__MODE__ || "view";
 
-// ---------- date helpers (local, no TZ shift) ----------
+// ---------- date helpers ----------
 const pad = (n) => (n < 10 ? "0" : "") + n;
 function fromISO(iso) { const [y,m,d]=iso.split("-").map(Number); return new Date(y, m-1, d); }
 function toISO(d) { return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; }
@@ -42,10 +38,10 @@ const days = [
   { key:"sun", label:"Sun", off:6 },
 ];
 const ALL_KEY = "all";
+const safeName = (s)=> (s||"").replace(/\s\d{4,6}$/,"");
 
-// ---------- shift formatting + generation ----------
+// ---------- shift helpers ----------
 function timeLabelFromFloat(h){
-  // h is like 14.5
   const m = Math.round(h*60);
   const H = (m/60)|0;
   const mm = m%60;
@@ -58,6 +54,7 @@ function parseHours(label){
   const [a,b]=label.split("–");
   const P=t=>{
     const m=t.match(/^(\d{1,2})(?::(30))?(AM|PM)$/);
+    if(!m) return 0;
     let h=+m[1], half=m[2]?0.5:0, ap=m[3];
     if(ap==="AM" && h===12) h=0;
     if(ap==="PM" && h!==12) h+=12;
@@ -66,28 +63,33 @@ function parseHours(label){
   let len=P(b)-P(a); if(len<0) len+=24; return len;
 }
 
-// ALL shifts between 8AM and 8PM in 30-min increments.
-// Includes: 2–8, 3–8, 4–8, 5–8, 6–8, 7–8, etc.
-function generateShiftOptions(){
-  const opts = ["Off"];
-  const step = 0.5; // 30 min
-  const earliest = 8;
-  const latest = 20;
+// 30-min slots between 8AM and 8PM
+const STEP = 0.5;
+const EARLIEST = 8;
+const LATEST = 20;
 
-  for(let start=earliest; start<latest; start+=step){
-    for(let end=start+step; end<=latest; end+=step){
-      const label = `${timeLabelFromFloat(start)}–${timeLabelFromFloat(end)}`;
-      opts.push(label);
-    }
-  }
-  // This produces everything including short shifts like 7–8 (1 hour).
-  // If you ever want to limit minimum length, tell me and I’ll clamp it.
-  return opts;
+function buildTimeList(startInclusive, endInclusive){
+  const out=[];
+  for(let t=startInclusive; t<=endInclusive; t+=STEP) out.push(t);
+  return out;
 }
-const SHIFT_OPTIONS = generateShiftOptions();
-const safeName = (s)=> (s||"").replace(/\s\d{4,6}$/,"");
+const START_TIMES = buildTimeList(EARLIEST, LATEST-STEP);
+function endTimesForStart(start){
+  return buildTimeList(start+STEP, LATEST);
+}
+function shiftLabel(start, end){
+  return `${timeLabelFromFloat(start)}–${timeLabelFromFloat(end)}`;
+}
 
-// ---------- data loading (carry-forward if missing) ----------
+// Quick chips (common shifts) + still supports everything via Custom
+const QUICK_SHIFTS = [
+  "Off",
+  "8AM–4PM", "9AM–5PM", "10AM–6PM", "11AM–7PM", "12PM–8PM",
+  "2PM–8PM", "3PM–8PM", "4PM–8PM", "5PM–8PM", "6PM–8PM", "7PM–8PM",
+  "8AM–8PM",
+];
+
+// ---------- data loading ----------
 async function fetchWeekJSON(weekISO){
   const res = await fetch(`./data/${weekISO}.json`, { cache:"no-store" });
   if(!res.ok) throw new Error("missing");
@@ -100,7 +102,6 @@ async function loadWeekData(weekISO, prevDataForFallback){
     if(prevDataForFallback){
       return { ...prevDataForFallback, weekStart: weekISO }; // carry forward
     }
-    // seed
     return {
       dealer:"Murdock Hyundai Murray (890090)",
       weekStart:weekISO,
@@ -115,9 +116,175 @@ async function loadWeekData(weekISO, prevDataForFallback){
   }
 }
 
+// ---------- ShiftChipEditor (Option 3) ----------
+function ShiftChipEditor({ value, onChange }){
+  const [open, setOpen] = React.useState(false);
+
+  // default custom picker values
+  const initial = React.useMemo(()=>{
+    if(value && value !== "Off" && value.includes("–")){
+      const [a,b] = value.split("–");
+      // convert label -> float
+      const toFloat = (t)=>{
+        const m = t.match(/^(\d{1,2})(?::(30))?(AM|PM)$/);
+        if(!m) return EARLIEST;
+        let h=+m[1], half=m[2]?0.5:0, ap=m[3];
+        if(ap==="AM" && h===12) h=0;
+        if(ap==="PM" && h!==12) h+=12;
+        return h+half;
+      };
+      return { start: toFloat(a), end: toFloat(b) };
+    }
+    return { start: 14, end: 20 }; // 2PM–8PM
+  }, [value]);
+
+  const [start, setStart] = React.useState(initial.start);
+  const [end, setEnd] = React.useState(initial.end);
+
+  // keep end valid if start changes
+  React.useEffect(()=>{
+    const validEnds = endTimesForStart(start);
+    if(!validEnds.includes(end)) setEnd(validEnds[0]);
+  }, [start]);
+
+  const current = value || "Off";
+
+  return (
+    <div style={{display:"grid",gap:8}}>
+      {/* quick chips */}
+      <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+        {QUICK_SHIFTS.map((s)=>(
+          <button
+            key={s}
+            type="button"
+            onClick={()=> onChange(s)}
+            style={{
+              border:"1px solid " + (current===s ? "#4f46e5" : "#e5e7eb"),
+              background: current===s ? "#eef2ff" : "#fff",
+              color:"#0f172a",
+              padding:"6px 10px",
+              borderRadius:999,
+              fontWeight:700,
+              fontSize:12,
+              cursor:"pointer",
+              maxWidth:"100%",
+            }}
+          >
+            {s}
+          </button>
+        ))}
+        <button
+          type="button"
+          onClick={()=> setOpen(true)}
+          style={{
+            border:"1px solid #e5e7eb",
+            background:"#fff",
+            padding:"6px 10px",
+            borderRadius:999,
+            fontWeight:800,
+            fontSize:12,
+            cursor:"pointer",
+          }}
+        >
+          Custom…
+        </button>
+      </div>
+
+      {/* show current if it's not one of the chips */}
+      {!QUICK_SHIFTS.includes(current) && current !== "Off" && (
+        <div style={{fontSize:12,color:"#475569",fontWeight:700}}>
+          Current: {current}
+        </div>
+      )}
+
+      {/* custom modal */}
+      {open && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          style={{
+            position:"fixed",
+            inset:0,
+            background:"rgba(2,6,23,.55)",
+            display:"grid",
+            placeItems:"center",
+            padding:16,
+            zIndex:9999,
+          }}
+          onClick={()=> setOpen(false)}
+        >
+          <div
+            style={{
+              width:"min(520px, 94vw)",
+              background:"#fff",
+              borderRadius:18,
+              border:"1px solid #e5e7eb",
+              boxShadow:"0 20px 60px rgba(0,0,0,.25)",
+              padding:16,
+            }}
+            onClick={(e)=> e.stopPropagation()}
+          >
+            <div style={{fontWeight:900,fontSize:16,marginBottom:10}}>Custom Shift</div>
+
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+              <div>
+                <div style={{fontSize:12,color:"#64748b",fontWeight:700,marginBottom:6}}>Start</div>
+                <select
+                  value={start}
+                  onChange={(e)=> setStart(Number(e.target.value))}
+                  style={{width:"100%",padding:"10px 12px",borderRadius:12,border:"1px solid #e5e7eb",fontWeight:800}}
+                >
+                  {START_TIMES.map(t=>(
+                    <option key={t} value={t}>{timeLabelFromFloat(t)}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <div style={{fontSize:12,color:"#64748b",fontWeight:700,marginBottom:6}}>End</div>
+                <select
+                  value={end}
+                  onChange={(e)=> setEnd(Number(e.target.value))}
+                  style={{width:"100%",padding:"10px 12px",borderRadius:12,border:"1px solid #e5e7eb",fontWeight:800}}
+                >
+                  {endTimesForStart(start).map(t=>(
+                    <option key={t} value={t}>{timeLabelFromFloat(t)}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div style={{marginTop:12,fontSize:13,color:"#334155",fontWeight:800}}>
+              Preview: {shiftLabel(start,end)}
+            </div>
+
+            <div style={{display:"flex",gap:10,justifyContent:"flex-end",marginTop:14}}>
+              <button
+                type="button"
+                onClick={()=> setOpen(false)}
+                style={{padding:"10px 12px",borderRadius:12,border:"1px solid #e5e7eb",background:"#fff",fontWeight:800,cursor:"pointer"}}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={()=>{
+                  onChange(shiftLabel(start,end));
+                  setOpen(false);
+                }}
+                style={{padding:"10px 12px",borderRadius:12,border:0,background:"#4f46e5",color:"#fff",fontWeight:900,cursor:"pointer"}}
+              >
+                Apply
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---------- App ----------
 function App(){
-  // default week is CURRENT week unless URL provides ?week=
   const qp = new URL(location.href).searchParams.get("week");
   const initialWeekISO = normalizeWeekISO(isISODate(qp) ? qp : currentWeekISO());
 
@@ -126,14 +293,12 @@ function App(){
   const latestDataRef = React.useRef(null);
   React.useEffect(()=>{ latestDataRef.current = data; }, [data]);
 
-  // auth
   const [serverPass, setServerPass] = React.useState(null);
   const [isAuthed, setIsAuthed] = React.useState(MODE==="view");
   const [pwd, setPwd] = React.useState("");
   const [active, setActive] = React.useState(ALL_KEY);
   const [saving, setSaving] = React.useState(false);
 
-  // stop sideways overflow when zooming / small screens
   React.useEffect(()=>{
     const html = document.documentElement;
     const body = document.body;
@@ -147,7 +312,6 @@ function App(){
     };
   }, []);
 
-  // load when week changes (no full reload)
   React.useEffect(()=>{
     (async ()=>{
       const d = await loadWeekData(weekISO, latestDataRef.current);
@@ -168,17 +332,16 @@ function App(){
 
   const canEdit = MODE==="edit" && isAuthed;
 
-  // auth gate
   if(MODE==="edit" && !isAuthed){
     return (
       <div style={{display:"grid",placeItems:"center",height:"100vh"}}>
         <div style={{border:"1px solid #e5e7eb",borderRadius:16,padding:24,width:340,background:"#fff"}}>
-          <div style={{fontWeight:700,marginBottom:8}}>Manager Access</div>
+          <div style={{fontWeight:900,marginBottom:8}}>Manager Access</div>
           <input type="password" placeholder="Enter password" value={pwd}
             onChange={e=>setPwd(e.target.value)}
-            style={{padding:"8px 10px",border:"1px solid #e5e7eb",borderRadius:10,width:"100%"}}/>
+            style={{padding:"10px 12px",border:"1px solid #e5e7eb",borderRadius:12,width:"100%",fontWeight:700}}/>
           <button
-            style={{marginTop:12,width:"100%",padding:"10px 12px",borderRadius:12,border:0,background:"#4f46e5",color:"#fff",fontWeight:600}}
+            style={{marginTop:12,width:"100%",padding:"10px 12px",borderRadius:12,border:0,background:"#4f46e5",color:"#fff",fontWeight:900,cursor:"pointer"}}
             onClick={()=>setIsAuthed(!!serverPass && pwd===serverPass)}
           >Login</button>
         </div>
@@ -186,7 +349,7 @@ function App(){
     );
   }
 
-  if(!data) return <div className="container">Loading…</div>;
+  if(!data) return <div style={{padding:16}}>Loading…</div>;
 
   const { dealer, employees=[], schedule={} } = data;
   const weekDate = fromISO(weekISO);
@@ -196,7 +359,6 @@ function App(){
   );
   const weekTotal = Object.values(totalsByEmp).reduce((a,b)=>a+b,0);
 
-  // updates
   const setShift = (empId, dayKey, val)=>{
     setData(p=> ({...p, schedule:{...p.schedule, [empId]:{...(p.schedule[empId]||{}), [dayKey]:val}}}));
   };
@@ -204,14 +366,12 @@ function App(){
     setData(p=> ({...p, employees: p.employees.map(e=> e.id===empId? {...e, name:newName} : e)}));
   };
 
-  // navigation without reload
   const navWeek = (delta)=>{
     const d = fromISO(weekISO);
     d.setDate(d.getDate() + delta*7);
     setWeekISO(normalizeWeekISO(toISO(d)));
   };
 
-  // save & share
   async function saveCurrent(targetWeek){
     setSaving(true);
     try{
@@ -250,32 +410,22 @@ function App(){
 
   // ---------- UI ----------
   const TopBar = (
-    <div className="top">
-      <div className="container">
-        <div className="bar" style={{alignItems:"flex-start",maxWidth:"100%"}}>
-          <div className="logo">S</div>
+    <div style={{background:"rgba(255,255,255,.85)",backdropFilter:"blur(10px)",borderBottom:"1px solid rgba(226,232,240,.9)"}}>
+      <div style={{maxWidth:960,margin:"0 auto",padding:14}}>
+        <div style={{display:"flex",gap:12,alignItems:"flex-start",maxWidth:"100%"}}>
+          <div style={{width:44,height:44,borderRadius:16,background:"linear-gradient(135deg,#4f46e5,#06b6d4)",display:"grid",placeItems:"center",color:"#fff",fontWeight:900}}>
+            S
+          </div>
 
           <div style={{flex:1,minWidth:0}}>
             <div style={{fontSize:12,color:"#64748b",textTransform:"uppercase",letterSpacing:1}}>Dealer</div>
-            <div style={{fontWeight:700,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{dealer}</div>
+            <div style={{fontWeight:900,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{dealer}</div>
             <div style={{fontSize:12,color:"#64748b"}}>
               Week of {weekDate.toLocaleDateString(undefined,{weekday:"long",month:"long",day:"numeric"})}
             </div>
           </div>
 
-          {/* On small screens this becomes horizontally scrollable instead of breaking layout */}
-          <div
-            className="actions"
-            style={{
-              display:"flex",
-              gap:8,
-              flexWrap:"nowrap",
-              overflowX:"auto",
-              WebkitOverflowScrolling:"touch",
-              maxWidth:"56vw",
-              paddingBottom:2
-            }}
-          >
+          <div style={{display:"flex",gap:8,flexWrap:"nowrap",overflowX:"auto",WebkitOverflowScrolling:"touch",maxWidth:"56vw",paddingBottom:2}}>
             <button className="btn" onClick={()=>navWeek(-1)}>◀ Prev</button>
             <button className="btn" onClick={()=>navWeek(+1)}>Next ▶</button>
             {canEdit && (
@@ -293,71 +443,125 @@ function App(){
   );
 
   const Tabs = (
-    <div className="container">
-      <div className="tabs" style={{maxWidth:"100%"}}>
-        <div className={`tab ${active===ALL_KEY?'active':''}`} onClick={()=>setActive(ALL_KEY)}>
-          <div>All</div><div style={{opacity:.8,fontSize:10}}>Week</div>
+    <div style={{maxWidth:960,margin:"0 auto",padding:"12px 14px"}}>
+      <div style={{display:"flex",gap:10,overflowX:"auto",WebkitOverflowScrolling:"touch",paddingBottom:4}}>
+        <div
+          onClick={()=>setActive(ALL_KEY)}
+          style={{
+            minWidth:76,
+            cursor:"pointer",
+            borderRadius:18,
+            padding:"10px 12px",
+            fontWeight:900,
+            border:"1px solid rgba(148,163,184,.35)",
+            background: active===ALL_KEY ? "linear-gradient(135deg,#4f46e5,#06b6d4)" : "rgba(255,255,255,.7)",
+            color: active===ALL_KEY ? "#fff" : "#0f172a",
+          }}
+        >
+          <div>All</div><div style={{opacity:.85,fontSize:10}}>Week</div>
         </div>
+
         {days.map(d=>(
-          <div key={d.key} className={`tab ${active===d.key?'active':''}`} onClick={()=>setActive(d.key)}>
+          <div
+            key={d.key}
+            onClick={()=>setActive(d.key)}
+            style={{
+              minWidth:86,
+              cursor:"pointer",
+              borderRadius:18,
+              padding:"10px 12px",
+              fontWeight:900,
+              border:"1px solid rgba(148,163,184,.35)",
+              background: active===d.key ? "linear-gradient(135deg,#4f46e5,#06b6d4)" : "rgba(255,255,255,.7)",
+              color: active===d.key ? "#fff" : "#0f172a",
+            }}
+          >
             <div>{d.label}</div>
-            <div style={{opacity:.8,fontSize:10}}>{fmtDay(weekISO, d.off)}</div>
+            <div style={{opacity:.85,fontSize:10}}>{fmtDay(weekISO,d.off)}</div>
           </div>
         ))}
       </div>
     </div>
   );
 
+  const containerStyle = {maxWidth:960,margin:"0 auto",padding:"0 14px",overflowX:"hidden"};
+  const cardStyle = {background:"rgba(255,255,255,.9)",border:"1px solid rgba(226,232,240,.9)",borderRadius:22,boxShadow:"0 10px 30px rgba(2,6,23,.08)"};
+  const headStyle = {padding:14,fontWeight:900,borderBottom:"1px solid rgba(226,232,240,.9)",background:"linear-gradient(135deg,#4f46e5,#06b6d4)",color:"#fff",borderTopLeftRadius:22,borderTopRightRadius:22};
+  const btnStyle = {
+    border:"1px solid rgba(148,163,184,.35)",
+    background:"rgba(255,255,255,.8)",
+    padding:"8px 10px",
+    borderRadius:14,
+    fontWeight:900,
+    cursor:"pointer"
+  };
+
   return (
-    <div style={{maxWidth:"100vw"}}>
+    <div style={{maxWidth:"100vw",minHeight:"100vh",background:"linear-gradient(#f8fbff,#eef2ff)"}}>
+      <style>{`
+        .btn{
+          border:1px solid rgba(148,163,184,.35);
+          background:rgba(255,255,255,.8);
+          padding:8px 10px;
+          border-radius:14px;
+          font-weight:900;
+          cursor:pointer;
+          white-space:nowrap;
+        }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border-bottom:1px solid rgba(226,232,240,.9); padding:10px; vertical-align: top; }
+        th { text-align:left; font-size:13px; color:#0f172a; background:rgba(248,250,252,.8); position: sticky; top: 0; }
+      `}</style>
+
       {TopBar}
       {Tabs}
 
-      <div className="container" style={{maxWidth:"100%",overflowX:"hidden"}}>
+      <div style={containerStyle}>
         {active===ALL_KEY ? (
-          <div className="card" style={{marginTop:16}}>
-            <div className="head">Full Week</div>
+          <div style={{...cardStyle, marginTop:14}}>
+            <div style={headStyle}>Full Week</div>
+
             <div style={{overflowX:"auto",maxWidth:"100%"}}>
-              <table style={{minWidth:720}}>
+              <table style={{minWidth:860}}>
                 <thead>
                   <tr>
-                    <th>Employee</th>
+                    <th style={{minWidth:220}}>Employee</th>
                     {days.map(d=>(
-                      <th key={d.key}>
+                      <th key={d.key} style={{minWidth:160}}>
                         {d.label} <span style={{color:"#94a3b8",fontSize:12}}>{fmtDay(weekISO,d.off)}</span>
                       </th>
                     ))}
-                    <th style={{textAlign:"right"}}>Total</th>
+                    <th style={{textAlign:"right",minWidth:80}}>Total</th>
                   </tr>
                 </thead>
+
                 <tbody>
                   {employees.map((e,idx)=>(
-                    <tr key={e.id} style={{background: idx%2 ? "#f8fafc" : "#fff"}}>
-                      <td style={{fontWeight:600}}>
+                    <tr key={e.id} style={{background: idx%2 ? "rgba(248,250,252,.8)" : "rgba(255,255,255,.7)"}}>
+                      <td style={{fontWeight:800}}>
                         {canEdit ? (
                           <input
                             value={e.name}
                             onChange={ev=>setEmployeeName(e.id, ev.target.value)}
-                            style={{width:"100%",padding:"6px 8px",border:"1px solid #e5e7eb",borderRadius:8}}
+                            style={{width:"100%",padding:"10px 12px",border:"1px solid rgba(226,232,240,.9)",borderRadius:14,fontWeight:800}}
                           />
                         ) : safeName(e.name)}
                       </td>
+
                       {days.map(d=>(
                         <td key={d.key}>
                           {canEdit ? (
-                            <select
+                            <ShiftChipEditor
                               value={schedule[e.id]?.[d.key] || "Off"}
-                              onChange={ev=>setShift(e.id, d.key, ev.target.value)}
-                              style={{padding:"6px 8px",border:"1px solid #e5e7eb",borderRadius:8, maxWidth:140}}
-                            >
-                              {SHIFT_OPTIONS.map(opt=> <option key={opt} value={opt}>{opt}</option>)}
-                            </select>
+                              onChange={(val)=> setShift(e.id, d.key, val)}
+                            />
                           ) : (
-                            <span style={{fontWeight:600}}>{schedule[e.id]?.[d.key] || "Off"}</span>
+                            <div style={{fontWeight:900}}>{schedule[e.id]?.[d.key] || "Off"}</div>
                           )}
                         </td>
                       ))}
-                      <td style={{textAlign:"right",fontWeight:800}}>{totalsByEmp[e.id]}</td>
+
+                      <td style={{textAlign:"right",fontWeight:900,fontSize:16}}>{totalsByEmp[e.id]}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -365,60 +569,64 @@ function App(){
             </div>
           </div>
         ) : (
-          <div style={{display:"grid",gap:12,marginTop:16}}>
+          <div style={{display:"grid",gap:12,marginTop:14}}>
             {employees.map(e=>(
-              <div key={e.id} className="card">
-                <div className="head">
+              <div key={e.id} style={cardStyle}>
+                <div style={headStyle}>
                   {canEdit ? (
                     <input
                       value={e.name}
                       onChange={ev=>setEmployeeName(e.id, ev.target.value)}
-                      style={{width:"100%",padding:"6px 8px",border:"1px solid #e5e7eb",borderRadius:8}}
+                      style={{width:"100%",padding:"10px 12px",border:"1px solid rgba(226,232,240,.9)",borderRadius:14,fontWeight:900}}
                     />
                   ) : safeName(e.name)}
                 </div>
-                <div className="row">
-                  <div>
-                    <div style={{color:"#64748b",fontSize:13}}>Shift</div>
+
+                <div style={{display:"flex",justifyContent:"space-between",gap:12,padding:14}}>
+                  <div style={{flex:1}}>
+                    <div style={{color:"#64748b",fontSize:13,fontWeight:800}}>Shift</div>
                     {canEdit ? (
-                      <select
+                      <ShiftChipEditor
                         value={schedule[e.id]?.[active] || "Off"}
-                        onChange={ev=>setShift(e.id, active, ev.target.value)}
-                        style={{padding:"6px 8px",border:"1px solid #e5e7eb",borderRadius:8, maxWidth:"100%"}}
-                      >
-                        {SHIFT_OPTIONS.map(opt=> <option key={opt} value={opt}>{opt}</option>)}
-                      </select>
+                        onChange={(val)=> setShift(e.id, active, val)}
+                      />
                     ) : (
-                      <div style={{fontSize:18,fontWeight:700}}>{schedule[e.id]?.[active] || "Off"}</div>
+                      <div style={{fontSize:18,fontWeight:900}}>{schedule[e.id]?.[active] || "Off"}</div>
                     )}
                   </div>
                   <div style={{textAlign:"right"}}>
-                    <div style={{color:"#64748b",fontSize:12}}>Paid Hours</div>
-                    <div style={{fontSize:20,fontWeight:800}}>{parseHours(schedule[e.id]?.[active])}</div>
+                    <div style={{color:"#64748b",fontSize:12,fontWeight:800}}>Paid Hours</div>
+                    <div style={{fontSize:22,fontWeight:900}}>{parseHours(schedule[e.id]?.[active])}</div>
                   </div>
                 </div>
               </div>
             ))}
-            <div style={{textAlign:"right",color:"#475569",fontSize:14,paddingBottom:24}}>
-              Day total: <span style={{fontWeight:700}}>
+
+            <div style={{textAlign:"right",color:"#475569",fontSize:14,fontWeight:800,paddingBottom:10}}>
+              Day total:{" "}
+              <span style={{fontWeight:900}}>
                 {employees.reduce((acc,e)=> acc + parseHours(schedule[e.id]?.[active]), 0)}
               </span>
             </div>
           </div>
         )}
 
-        <div className="card" style={{padding:16,margin:"16px 0 48px"}}>
-          <div style={{fontWeight:700,marginBottom:8}}>Weekly Totals</div>
-          {employees.map(e=>(
-            <div key={e.id} style={{display:"flex",justifyContent:"space-between",padding:12,border:"1px solid #eef2ff",borderRadius:12,marginBottom:8,background:"#fff"}}>
-              <div style={{marginRight:12,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{safeName(e.name)}</div>
-              <div style={{fontWeight:800}}>{totalsByEmp[e.id]}</div>
+        <div style={{...cardStyle, margin:"14px 0 44px"}}>
+          <div style={{padding:14,fontWeight:900}}>Weekly Totals</div>
+          <div style={{padding:"0 14px 14px"}}>
+            {employees.map(e=>(
+              <div key={e.id} style={{display:"flex",justifyContent:"space-between",padding:12,border:"1px solid rgba(224,231,255,.9)",borderRadius:16,marginBottom:10,background:"rgba(255,255,255,.7)"}}>
+                <div style={{marginRight:12,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontWeight:800}}>{safeName(e.name)}</div>
+                <div style={{fontWeight:900}}>{totalsByEmp[e.id]}</div>
+              </div>
+            ))}
+            <div style={{display:"flex",justifyContent:"space-between",padding:12,borderRadius:16,background:"rgba(224,231,255,.9)",fontWeight:900}}>
+              <div>Week Total</div><div>{weekTotal}</div>
             </div>
-          ))}
-          <div style={{display:"flex",justifyContent:"space-between",padding:12,borderRadius:12,background:"#eef2ff",fontWeight:800}}>
-            <div>Week Total</div><div>{weekTotal}</div>
           </div>
         </div>
+
+        <div style={{height:20}} />
       </div>
     </div>
   );
