@@ -1,4 +1,4 @@
-// app.js — Tephseal Scheduler (manager editor + always-visible "+ Add employee" row)
+// app.js — Tephseal Scheduler (clean manager editor + add-row + autofocus + Custom in dropdown)
 // Manager: /edit.html (editable, Save/Share)
 // Viewer:  / (read-only)
 // Default week: current week (Monday of today) unless ?week=YYYY-MM-DD
@@ -43,6 +43,7 @@ const safeName = (s)=> (s||"").replace(/\s\d{4,6}$/,"");
 const STEP = 0.5;      // 30 min
 const EARLIEST = 8;    // 8AM
 const LATEST = 20;     // 8PM
+const CUSTOM_VALUE = "__CUSTOM__";
 
 function timeLabelFromFloat(h){
   const m = Math.round(h*60);
@@ -74,7 +75,7 @@ const START_TIMES = buildTimeList(EARLIEST, LATEST-STEP);
 function endTimesForStart(start){ return buildTimeList(start+STEP, LATEST); }
 function shiftLabel(start,end){ return `${timeLabelFromFloat(start)}–${timeLabelFromFloat(end)}`; }
 
-// Common shifts (compact)
+// Common shifts (compact dropdown)
 // ✅ Includes 4PM–8PM
 const COMMON_SHIFTS = [
   "Off",
@@ -100,21 +101,22 @@ async function loadWeekData(weekISO, prevDataForFallback){
     return await fetchWeekJSON(weekISO);
   }catch{
     if(prevDataForFallback) return { ...prevDataForFallback, weekStart: weekISO };
-    // ✅ Default to 3 employees
+
+    // ✅ Default to 3 employees for brand-new schedules
     return {
-      dealer:"Murdock Hyundai Murray (890090)",
+      dealer:"Tephseal",
       weekStart:weekISO,
       employees:[
-        { id:"e1", name:"Tyler" },
-        { id:"e2", name:"Derrick" },
-        { id:"e3", name:"Jonathan" },
+        { id:"e1", name:"Employee 1" },
+        { id:"e2", name:"Employee 2" },
+        { id:"e3", name:"Employee 3" },
       ],
       schedule:{},
     };
   }
 }
 
-// ---------- Compact editor: Common dropdown + Custom modal ----------
+// ---------- Compact editor: dropdown includes Custom… ----------
 function ShiftCompactEditor({ value, onChange }){
   const [open, setOpen] = React.useState(false);
 
@@ -131,7 +133,7 @@ function ShiftCompactEditor({ value, onChange }){
       };
       return { start: toFloat(a), end: toFloat(b) };
     }
-    return { start: 14, end: 20 }; // 2PM–8PM
+    return { start: 14, end: 20 }; // default 2PM–8PM
   }, [value]);
 
   const [start, setStart] = React.useState(initial.start);
@@ -145,47 +147,36 @@ function ShiftCompactEditor({ value, onChange }){
   const current = value || "Off";
   const isCommon = COMMON_SHIFTS.includes(current);
 
+  // If current is a custom shift, show "Custom…" as selected
+  const selectValue = isCommon ? current : (current === "Off" ? "Off" : CUSTOM_VALUE);
+
   return (
-    <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+    <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
       <select
-        value={isCommon ? current : "Off"}
-        onChange={(e)=> onChange(e.target.value)}
+        value={selectValue}
+        onChange={(e)=>{
+          const v = e.target.value;
+          if(v === CUSTOM_VALUE){
+            setOpen(true);
+            return;
+          }
+          onChange(v);
+        }}
         style={{
           padding:"8px 10px",
           borderRadius:14,
           border:"1px solid rgba(226,232,240,.95)",
           background:"rgba(255,255,255,.85)",
           fontWeight:900,
-          maxWidth:160,
           width:"100%",
+          maxWidth:180,
         }}
       >
         {COMMON_SHIFTS.map(s => <option key={s} value={s}>{s}</option>)}
+        <option value={CUSTOM_VALUE}>Custom…</option>
       </select>
 
-      <button
-        type="button"
-        onClick={()=> setOpen(true)}
-        style={{
-          padding:"8px 10px",
-          borderRadius:14,
-          border:"1px solid rgba(226,232,240,.95)",
-          background:"linear-gradient(135deg,#4f46e5,#06b6d4)",
-          color:"#fff",
-          fontWeight:900,
-          cursor:"pointer",
-          whiteSpace:"nowrap"
-        }}
-      >
-        Custom…
-      </button>
-
-      {!isCommon && current !== "Off" && (
-        <div style={{fontSize:12,color:"#475569",fontWeight:900}}>
-          Current: {current}
-        </div>
-      )}
-
+      {/* Custom modal */}
       {open && (
         <div
           role="dialog"
@@ -225,6 +216,7 @@ function ShiftCompactEditor({ value, onChange }){
                   {START_TIMES.map(t => <option key={t} value={t}>{timeLabelFromFloat(t)}</option>)}
                 </select>
               </div>
+
               <div>
                 <div style={{fontSize:12,color:"#64748b",fontWeight:900,marginBottom:6}}>End</div>
                 <select
@@ -267,6 +259,15 @@ function ShiftCompactEditor({ value, onChange }){
   );
 }
 
+// ---------- id helper ----------
+function nextEmployeeId(employees){
+  const used = new Set((employees||[]).map(e=>e.id));
+  let n = (employees||[]).length + 1;
+  let id = `e${n}`;
+  while(used.has(id)){ n++; id = `e${n}`; }
+  return id;
+}
+
 // ---------- App ----------
 function App(){
   const qp = new URL(location.href).searchParams.get("week");
@@ -275,6 +276,7 @@ function App(){
   const [weekISO, setWeekISO] = React.useState(initialWeekISO);
   const [data, setData] = React.useState(null);
   const latestDataRef = React.useRef(null);
+
   React.useEffect(()=>{ latestDataRef.current = data; }, [data]);
 
   const [serverPass, setServerPass] = React.useState(null);
@@ -282,6 +284,9 @@ function App(){
   const [pwd, setPwd] = React.useState("");
   const [active, setActive] = React.useState(ALL_KEY);
   const [saving, setSaving] = React.useState(false);
+
+  // autofocus target for new employee name
+  const [focusEmpId, setFocusEmpId] = React.useState(null);
 
   // prevent horizontal break when zooming
   React.useEffect(()=>{
@@ -316,9 +321,6 @@ function App(){
   }, []);
 
   const canEdit = MODE==="edit" && isAuthed;
-
-  // ✅ For the always-visible "+ row"
-  const [isAddingRow, setIsAddingRow] = React.useState(false);
 
   if(MODE==="edit" && !isAuthed){
     return (
@@ -360,16 +362,18 @@ function App(){
     setData(p=> ({...p, employees: p.employees.map(e=> e.id===empId? {...e, name:newName} : e)}));
   };
 
-  // ✅ Add Employee (used by the "+ row")
+  // ✅ Add Employee + autofocus new name field
   const addEmployee = ()=>{
+    const currentEmployees = (latestDataRef.current?.employees) || employees || [];
+    const id = nextEmployeeId(currentEmployees);
+
     setData(p=>{
-      const used = new Set((p.employees||[]).map(e=>e.id));
-      let n = (p.employees||[]).length + 1;
-      let id = `e${n}`;
-      while(used.has(id)){ n++; id = `e${n}`; }
-      const newEmp = { id, name: "" }; // blank so you can type immediately
+      const newEmp = { id, name: "" };
       return { ...p, employees: [...(p.employees||[]), newEmp] };
     });
+
+    setFocusEmpId(id);
+    setTimeout(()=> setFocusEmpId(null), 2000);
   };
 
   const navWeek = (delta)=>{
@@ -427,7 +431,7 @@ function App(){
           </div>
 
           <div style={{flex:1,minWidth:0}}>
-            <div style={{fontSize:12,color:"#64748b",textTransform:"uppercase",letterSpacing:1}}>Dealer</div>
+            <div style={{fontSize:12,color:"#64748b",textTransform:"uppercase",letterSpacing:1}}>Schedule</div>
             <div style={{fontWeight:950,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{dealer}</div>
             <div style={{fontSize:12,color:"#64748b"}}>
               Week of {weekDate.toLocaleDateString(undefined,{weekday:"long",month:"long",day:"numeric"})}
@@ -508,13 +512,14 @@ function App(){
           cursor:pointer;
           white-space:nowrap;
         }
+
+        /* table sizing fixes */
         table { border-collapse: collapse; width: 100%; table-layout: fixed; }
         th, td { border-bottom:1px solid rgba(226,232,240,.9); padding:10px; vertical-align: top; overflow:hidden; }
         th { text-align:left; font-size:13px; color:#0f172a; background:rgba(248,250,252,.8); position: sticky; top: 0; }
-        .empInput { width:100%; max-width: 220px; }
-        @media (max-width: 520px){
-          .empInput { max-width: 160px; }
-        }
+        .empInput { width:100%; max-width: 200px; }
+        @media (max-width: 520px){ .empInput { max-width: 150px; } }
+
         .addRowBtn{
           width:100%;
           display:flex;
@@ -548,7 +553,7 @@ function App(){
               <table style={{minWidth:760}}>
                 <thead>
                   <tr>
-                    <th style={{width:170}}>Employee</th>
+                    <th style={{width:160}}>Employee</th>
                     {days.map(d=>(
                       <th key={d.key} style={{width:170}}>
                         {d.label} <span style={{color:"#94a3b8",fontSize:12}}>{fmtDay(weekISO,d.off)}</span>
@@ -568,6 +573,12 @@ function App(){
                             value={e.name}
                             placeholder="Employee name"
                             onChange={ev=>setEmployeeName(e.id, ev.target.value)}
+                            ref={(el)=>{
+                              if(el && focusEmpId === e.id){
+                                el.focus();
+                                el.select();
+                              }
+                            }}
                             style={{padding:"10px 12px",border:"1px solid rgba(226,232,240,.9)",borderRadius:14,fontWeight:900}}
                           />
                         ) : safeName(e.name)}
@@ -590,27 +601,18 @@ function App(){
                     </tr>
                   ))}
 
-                  {/* ✅ Always-visible "+ Add employee" row (manager only) */}
+                  {/* Always-visible "+ Add employee" row (manager only) */}
                   {canEdit && (
                     <tr>
                       <td colSpan={days.length + 2} style={{borderBottom:0, padding:14}}>
-                        {!isAddingRow ? (
-                          <button
-                            className="addRowBtn"
-                            onClick={()=>{
-                              addEmployee();
-                              setIsAddingRow(true);
-                              // next render shows the new row; we keep the add row visible below it
-                              setTimeout(()=>setIsAddingRow(false), 250);
-                            }}
-                            type="button"
-                          >
-                            <span className="plusBubble">+</span>
-                            Add another employee
-                          </button>
-                        ) : (
-                          <div style={{color:"#64748b",fontWeight:900}}>Adding…</div>
-                        )}
+                        <button
+                          className="addRowBtn"
+                          onClick={addEmployee}
+                          type="button"
+                        >
+                          <span className="plusBubble">+</span>
+                          Add another employee
+                        </button>
                       </td>
                     </tr>
                   )}
@@ -628,6 +630,12 @@ function App(){
                       value={e.name}
                       placeholder="Employee name"
                       onChange={ev=>setEmployeeName(e.id, ev.target.value)}
+                      ref={(el)=>{
+                        if(el && focusEmpId === e.id){
+                          el.focus();
+                          el.select();
+                        }
+                      }}
                       style={{width:"100%",padding:"10px 12px",border:"1px solid rgba(226,232,240,.9)",borderRadius:14,fontWeight:950}}
                     />
                   ) : safeName(e.name)}
@@ -653,11 +661,11 @@ function App(){
               </div>
             ))}
 
-            {/* ✅ Add employee button also shown in day view (manager only) */}
+            {/* Add employee also visible in day view (manager only) */}
             {canEdit && (
               <button
                 className="addRowBtn"
-                onClick={()=> addEmployee()}
+                onClick={addEmployee}
                 type="button"
                 style={{marginBottom:8}}
               >
