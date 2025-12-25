@@ -74,7 +74,8 @@ const START_TIMES = buildTimeList(EARLIEST, LATEST-STEP);
 function endTimesForStart(start){ return buildTimeList(start+STEP, LATEST); }
 function shiftLabel(start,end){ return `${timeLabelFromFloat(start)}–${timeLabelFromFloat(end)}`; }
 
-// Commonly used shifts (clean dropdown list)
+// Commonly used shifts (shown in the compact dropdown)
+// ✅ Added 4PM–8PM
 const COMMON_SHIFTS = [
   "Off",
   "8AM–5PM",
@@ -85,6 +86,7 @@ const COMMON_SHIFTS = [
   "11AM–8PM",
   "12PM–7PM",
   "12PM–8PM",
+  "4PM–8PM",
 ];
 
 // ---------- data loading (carry forward) ----------
@@ -116,7 +118,6 @@ async function loadWeekData(weekISO, prevDataForFallback){
 function ShiftCompactEditor({ value, onChange }){
   const [open, setOpen] = React.useState(false);
 
-  // parse current shift into floats for modal defaults
   const initial = React.useMemo(()=>{
     if(value && value !== "Off" && value.includes("–")){
       const [a,b] = value.split("–");
@@ -155,7 +156,8 @@ function ShiftCompactEditor({ value, onChange }){
           border:"1px solid rgba(226,232,240,.95)",
           background:"rgba(255,255,255,.85)",
           fontWeight:900,
-          maxWidth:170
+          maxWidth:160,
+          width:"100%",
         }}
       >
         {COMMON_SHIFTS.map(s => <option key={s} value={s}>{s}</option>)}
@@ -355,6 +357,18 @@ function App(){
     setData(p=> ({...p, employees: p.employees.map(e=> e.id===empId? {...e, name:newName} : e)}));
   };
 
+  // ✅ Add Employee (manager only)
+  const addEmployee = ()=>{
+    setData(p=>{
+      const used = new Set((p.employees||[]).map(e=>e.id));
+      let n = (p.employees||[]).length + 1;
+      let id = `e${n}`;
+      while(used.has(id)){ n++; id = `e${n}`; }
+      const newEmp = { id, name: "New Employee" };
+      return { ...p, employees: [...(p.employees||[]), newEmp] };
+    });
+  };
+
   const navWeek = (delta)=>{
     const d = fromISO(weekISO);
     d.setDate(d.getDate() + delta*7);
@@ -424,6 +438,7 @@ function App(){
               <>
                 <button className="btn" onClick={()=>saveCurrent()} disabled={saving}>{saving ? "Saving…" : "Save"}</button>
                 <button className="btn" onClick={()=>shareLinkForWeek(weekISO)}>Share Link</button>
+                <button className="btn" onClick={addEmployee}>+ Add Employee</button>
               </>
             )}
           </div>
@@ -481,6 +496,7 @@ function App(){
   return (
     <div style={{maxWidth:"100vw",minHeight:"100vh",background:"linear-gradient(#f8fbff,#eef2ff)"}}>
       <style>{`
+        * { box-sizing: border-box; }
         .btn{
           border:1px solid rgba(148,163,184,.35);
           background:rgba(255,255,255,.8);
@@ -490,9 +506,13 @@ function App(){
           cursor:pointer;
           white-space:nowrap;
         }
-        table { border-collapse: collapse; width: 100%; }
-        th, td { border-bottom:1px solid rgba(226,232,240,.9); padding:10px; vertical-align: top; }
+        table { border-collapse: collapse; width: 100%; table-layout: fixed; }
+        th, td { border-bottom:1px solid rgba(226,232,240,.9); padding:10px; vertical-align: top; overflow:hidden; }
         th { text-align:left; font-size:13px; color:#0f172a; background:rgba(248,250,252,.8); position: sticky; top: 0; }
+        .empInput { width:100%; max-width: 220px; }
+        @media (max-width: 520px){
+          .empInput { max-width: 160px; }
+        }
       `}</style>
 
       {TopBar}
@@ -504,16 +524,16 @@ function App(){
             <div style={headStyle}>Full Week</div>
 
             <div style={{overflowX:"auto",maxWidth:"100%"}}>
-              <table style={{minWidth:860}}>
+              <table style={{minWidth:760}}>
                 <thead>
                   <tr>
-                    <th style={{minWidth:220}}>Employee</th>
+                    <th style={{width:170}}>Employee</th>
                     {days.map(d=>(
-                      <th key={d.key} style={{minWidth:200}}>
+                      <th key={d.key} style={{width:170}}>
                         {d.label} <span style={{color:"#94a3b8",fontSize:12}}>{fmtDay(weekISO,d.off)}</span>
                       </th>
                     ))}
-                    <th style={{textAlign:"right",minWidth:80}}>Total</th>
+                    <th style={{textAlign:"right",width:70}}>Total</th>
                   </tr>
                 </thead>
 
@@ -523,9 +543,10 @@ function App(){
                       <td style={{fontWeight:900}}>
                         {canEdit ? (
                           <input
+                            className="empInput"
                             value={e.name}
                             onChange={ev=>setEmployeeName(e.id, ev.target.value)}
-                            style={{width:"100%",padding:"10px 12px",border:"1px solid rgba(226,232,240,.9)",borderRadius:14,fontWeight:900}}
+                            style={{padding:"10px 12px",border:"1px solid rgba(226,232,240,.9)",borderRadius:14,fontWeight:900}}
                           />
                         ) : safeName(e.name)}
                       </td>
