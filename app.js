@@ -1,4 +1,4 @@
-// app.js — Tephseal Scheduler (clean manager editor + add-row + autofocus + Custom in dropdown)
+// app.js — Tephseal Scheduler (Custom in dropdown + always works even when already selected)
 // Manager: /edit.html (editable, Save/Share)
 // Viewer:  / (read-only)
 // Default week: current week (Monday of today) unless ?week=YYYY-MM-DD
@@ -75,8 +75,7 @@ const START_TIMES = buildTimeList(EARLIEST, LATEST-STEP);
 function endTimesForStart(start){ return buildTimeList(start+STEP, LATEST); }
 function shiftLabel(start,end){ return `${timeLabelFromFloat(start)}–${timeLabelFromFloat(end)}`; }
 
-// Common shifts (compact dropdown)
-// ✅ Includes 4PM–8PM
+// Common shifts (compact dropdown) + custom
 const COMMON_SHIFTS = [
   "Off",
   "8AM–5PM",
@@ -101,8 +100,6 @@ async function loadWeekData(weekISO, prevDataForFallback){
     return await fetchWeekJSON(weekISO);
   }catch{
     if(prevDataForFallback) return { ...prevDataForFallback, weekStart: weekISO };
-
-    // ✅ Default to 3 employees for brand-new schedules
     return {
       dealer:"Tephseal",
       weekStart:weekISO,
@@ -116,7 +113,7 @@ async function loadWeekData(weekISO, prevDataForFallback){
   }
 }
 
-// ---------- Compact editor: dropdown includes Custom… ----------
+// ---------- Compact editor: dropdown includes Custom… and ALWAYS opens ----------
 function ShiftCompactEditor({ value, onChange }){
   const [open, setOpen] = React.useState(false);
 
@@ -133,7 +130,7 @@ function ShiftCompactEditor({ value, onChange }){
       };
       return { start: toFloat(a), end: toFloat(b) };
     }
-    return { start: 14, end: 20 }; // default 2PM–8PM
+    return { start: 14, end: 20 }; // 2PM–8PM
   }, [value]);
 
   const [start, setStart] = React.useState(initial.start);
@@ -146,14 +143,27 @@ function ShiftCompactEditor({ value, onChange }){
 
   const current = value || "Off";
   const isCommon = COMMON_SHIFTS.includes(current);
-
-  // If current is a custom shift, show "Custom…" as selected
   const selectValue = isCommon ? current : (current === "Off" ? "Off" : CUSTOM_VALUE);
+
+  // ✅ key fix: open modal when user clicks the select AND custom is currently selected
+  const handlePointerDown = (e)=>{
+    // If the current select value is Custom, a click won't fire onChange; open the modal.
+    if(selectValue === CUSTOM_VALUE){
+      // Let the dropdown still open normally if they want to change,
+      // BUT if they tap the select, we interpret that as wanting to edit custom.
+      // Opening the modal is the desired UX here.
+      setOpen(true);
+      // Stop the native select menu from opening (prevents double UI)
+      e.preventDefault();
+    }
+  };
 
   return (
     <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
       <select
         value={selectValue}
+        onMouseDown={handlePointerDown}     // desktop
+        onPointerDown={handlePointerDown}   // mobile
         onChange={(e)=>{
           const v = e.target.value;
           if(v === CUSTOM_VALUE){
@@ -176,7 +186,6 @@ function ShiftCompactEditor({ value, onChange }){
         <option value={CUSTOM_VALUE}>Custom…</option>
       </select>
 
-      {/* Custom modal */}
       {open && (
         <div
           role="dialog"
@@ -276,7 +285,6 @@ function App(){
   const [weekISO, setWeekISO] = React.useState(initialWeekISO);
   const [data, setData] = React.useState(null);
   const latestDataRef = React.useRef(null);
-
   React.useEffect(()=>{ latestDataRef.current = data; }, [data]);
 
   const [serverPass, setServerPass] = React.useState(null);
@@ -285,10 +293,8 @@ function App(){
   const [active, setActive] = React.useState(ALL_KEY);
   const [saving, setSaving] = React.useState(false);
 
-  // autofocus target for new employee name
   const [focusEmpId, setFocusEmpId] = React.useState(null);
 
-  // prevent horizontal break when zooming
   React.useEffect(()=>{
     const html = document.documentElement;
     const body = document.body;
@@ -362,16 +368,12 @@ function App(){
     setData(p=> ({...p, employees: p.employees.map(e=> e.id===empId? {...e, name:newName} : e)}));
   };
 
-  // ✅ Add Employee + autofocus new name field
   const addEmployee = ()=>{
-    const currentEmployees = (latestDataRef.current?.employees) || employees || [];
-    const id = nextEmployeeId(currentEmployees);
-
+    const id = nextEmployeeId((latestDataRef.current?.employees) || employees || []);
     setData(p=>{
       const newEmp = { id, name: "" };
       return { ...p, employees: [...(p.employees||[]), newEmp] };
     });
-
     setFocusEmpId(id);
     setTimeout(()=> setFocusEmpId(null), 2000);
   };
@@ -512,14 +514,11 @@ function App(){
           cursor:pointer;
           white-space:nowrap;
         }
-
-        /* table sizing fixes */
         table { border-collapse: collapse; width: 100%; table-layout: fixed; }
         th, td { border-bottom:1px solid rgba(226,232,240,.9); padding:10px; vertical-align: top; overflow:hidden; }
         th { text-align:left; font-size:13px; color:#0f172a; background:rgba(248,250,252,.8); position: sticky; top: 0; }
         .empInput { width:100%; max-width: 200px; }
         @media (max-width: 520px){ .empInput { max-width: 150px; } }
-
         .addRowBtn{
           width:100%;
           display:flex;
@@ -601,15 +600,10 @@ function App(){
                     </tr>
                   ))}
 
-                  {/* Always-visible "+ Add employee" row (manager only) */}
                   {canEdit && (
                     <tr>
                       <td colSpan={days.length + 2} style={{borderBottom:0, padding:14}}>
-                        <button
-                          className="addRowBtn"
-                          onClick={addEmployee}
-                          type="button"
-                        >
+                        <button className="addRowBtn" onClick={addEmployee} type="button">
                           <span className="plusBubble">+</span>
                           Add another employee
                         </button>
@@ -661,14 +655,8 @@ function App(){
               </div>
             ))}
 
-            {/* Add employee also visible in day view (manager only) */}
             {canEdit && (
-              <button
-                className="addRowBtn"
-                onClick={addEmployee}
-                type="button"
-                style={{marginBottom:8}}
-              >
+              <button className="addRowBtn" onClick={addEmployee} type="button" style={{marginBottom:8}}>
                 <span className="plusBubble">+</span>
                 Add another employee
               </button>
