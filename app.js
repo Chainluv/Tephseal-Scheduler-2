@@ -1,10 +1,6 @@
-// app.js — Tephseal Scheduler (Add row + autofocus + Custom always opens + Delete employee)
+// app.js — Tephseal Scheduler (mobile top bar fix + always-visible actions)
 // Manager: /edit.html (editable, Save/Share)
 // Viewer:  / (read-only)
-// Default week: current week (Monday of today) unless ?week=YYYY-MM-DD
-//
-// Vercel env vars (Production):
-//   ADMIN_PASS, GITHUB_TOKEN, GITHUB_OWNER, GITHUB_REPO
 
 const MODE = window.__MODE__ || "view";
 
@@ -145,11 +141,10 @@ function ShiftCompactEditor({ value, onChange }){
   const isCommon = COMMON_SHIFTS.includes(current);
   const selectValue = isCommon ? current : (current === "Off" ? "Off" : CUSTOM_VALUE);
 
-  // ✅ key fix: open modal when user clicks the select AND custom is currently selected
   const handlePointerDown = (e)=>{
     if(selectValue === CUSTOM_VALUE){
       setOpen(true);
-      e.preventDefault(); // prevent native dropdown from opening
+      e.preventDefault();
     }
   };
 
@@ -161,10 +156,7 @@ function ShiftCompactEditor({ value, onChange }){
         onPointerDown={handlePointerDown}
         onChange={(e)=>{
           const v = e.target.value;
-          if(v === CUSTOM_VALUE){
-            setOpen(true);
-            return;
-          }
+          if(v === CUSTOM_VALUE){ setOpen(true); return; }
           onChange(v);
         }}
         style={{
@@ -363,7 +355,6 @@ function App(){
     setData(p=> ({...p, employees: p.employees.map(e=> e.id===empId? {...e, name:newName} : e)}));
   };
 
-  // ✅ Delete employee + remove their schedule
   const deleteEmployee = (empId)=>{
     const emp = employees.find(e=>e.id===empId);
     const label = emp?.name ? ` "${emp.name}"` : "";
@@ -376,11 +367,9 @@ function App(){
       return { ...p, employees: nextEmployees, schedule: nextSchedule };
     });
 
-    // If we were trying to focus that row, clear it
     if(focusEmpId === empId) setFocusEmpId(null);
   };
 
-  // ✅ Add employee + autofocus
   const addEmployee = ()=>{
     const id = nextEmployeeId((latestDataRef.current?.employees) || employees || []);
     setData(p=>{
@@ -440,20 +429,18 @@ function App(){
   const TopBar = (
     <div style={{background:"rgba(255,255,255,.85)",backdropFilter:"blur(10px)",borderBottom:"1px solid rgba(226,232,240,.9)"}}>
       <div style={{maxWidth:960,margin:"0 auto",padding:14}}>
-        <div style={{display:"flex",gap:12,alignItems:"flex-start",maxWidth:"100%"}}>
-          <div style={{width:44,height:44,borderRadius:16,background:"linear-gradient(135deg,#4f46e5,#06b6d4)",display:"grid",placeItems:"center",color:"#fff",fontWeight:950}}>
-            S
-          </div>
-
-          <div style={{flex:1,minWidth:0}}>
-            <div style={{fontSize:12,color:"#64748b",textTransform:"uppercase",letterSpacing:1}}>Schedule</div>
-            <div style={{fontWeight:950,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{dealer}</div>
-            <div style={{fontSize:12,color:"#64748b"}}>
-              Week of {weekDate.toLocaleDateString(undefined,{weekday:"long",month:"long",day:"numeric"})}
+        <div className="topbar">
+          <div className="brand">
+            <div className="logo">S</div>
+            <div className="brandText">
+              <div className="dealerName">{dealer}</div>
+              <div className="weekLine">
+                Week of {weekDate.toLocaleDateString(undefined,{weekday:"long",month:"long",day:"numeric"})}
+              </div>
             </div>
           </div>
 
-          <div style={{display:"flex",gap:8,flexWrap:"nowrap",overflowX:"auto",WebkitOverflowScrolling:"touch",maxWidth:"56vw",paddingBottom:2}}>
+          <div className="actions">
             <button className="btn" onClick={()=>navWeek(-1)}>◀ Prev</button>
             <button className="btn" onClick={()=>navWeek(+1)}>Next ▶</button>
             {canEdit && (
@@ -520,16 +507,70 @@ function App(){
         * { box-sizing: border-box; }
         .btn{
           border:1px solid rgba(148,163,184,.35);
-          background:rgba(255,255,255,.8);
+          background:rgba(255,255,255,.85);
           padding:8px 10px;
           border-radius:14px;
           font-weight:950;
           cursor:pointer;
           white-space:nowrap;
         }
+
+        /* --- top bar layout (fix mobile tightness) --- */
+        .topbar{
+          display:flex;
+          align-items:flex-start;
+          justify-content:space-between;
+          gap:12px;
+        }
+        .brand{ display:flex; gap:12px; align-items:flex-start; min-width:0; }
+        .logo{
+          width:44px;height:44px;border-radius:16px;
+          background:linear-gradient(135deg,#4f46e5,#06b6d4);
+          display:grid;place-items:center;color:#fff;font-weight:950;
+          flex:0 0 auto;
+        }
+        .brandText{ min-width:0; }
+        .dealerName{
+          font-weight:950;
+          font-size:16px;
+          line-height:1.1;
+          white-space:normal;   /* allow wrap */
+          overflow:visible;
+          text-overflow:clip;
+          max-width: 52vw;      /* prevents buttons collision */
+        }
+        .weekLine{
+          margin-top:4px;
+          font-size:12px;
+          color:#64748b;
+          font-weight:800;
+        }
+        .actions{
+          display:flex;
+          gap:8px;
+          flex-wrap:wrap;       /* allow 2nd row */
+          justify-content:flex-end;
+          align-items:center;
+          flex:0 0 auto;
+          max-width: 46vw;
+        }
+
+        /* On small screens: make actions full width under title so they're always visible */
+        @media (max-width: 520px){
+          .topbar{ flex-direction:column; align-items:stretch; }
+          .dealerName{ max-width: 100%; }
+          .actions{
+            max-width:100%;
+            justify-content:flex-start;
+            gap:8px;
+          }
+          .btn{ flex:1 1 auto; text-align:center; }
+        }
+
         table { border-collapse: collapse; width: 100%; table-layout: fixed; }
         th, td { border-bottom:1px solid rgba(226,232,240,.9); padding:10px; vertical-align: top; overflow:hidden; }
         th { text-align:left; font-size:13px; color:#0f172a; background:rgba(248,250,252,.8); position: sticky; top: 0; }
+
         .empInput { width:100%; max-width: 190px; }
         @media (max-width: 520px){ .empInput { max-width: 140px; } }
 
