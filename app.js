@@ -1,4 +1,4 @@
-// app.js — Tephseal Scheduler (Custom in dropdown + always works even when already selected)
+// app.js — Tephseal Scheduler (Add row + autofocus + Custom always opens + Delete employee)
 // Manager: /edit.html (editable, Save/Share)
 // Viewer:  / (read-only)
 // Default week: current week (Monday of today) unless ?week=YYYY-MM-DD
@@ -147,14 +147,9 @@ function ShiftCompactEditor({ value, onChange }){
 
   // ✅ key fix: open modal when user clicks the select AND custom is currently selected
   const handlePointerDown = (e)=>{
-    // If the current select value is Custom, a click won't fire onChange; open the modal.
     if(selectValue === CUSTOM_VALUE){
-      // Let the dropdown still open normally if they want to change,
-      // BUT if they tap the select, we interpret that as wanting to edit custom.
-      // Opening the modal is the desired UX here.
       setOpen(true);
-      // Stop the native select menu from opening (prevents double UI)
-      e.preventDefault();
+      e.preventDefault(); // prevent native dropdown from opening
     }
   };
 
@@ -162,8 +157,8 @@ function ShiftCompactEditor({ value, onChange }){
     <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
       <select
         value={selectValue}
-        onMouseDown={handlePointerDown}     // desktop
-        onPointerDown={handlePointerDown}   // mobile
+        onMouseDown={handlePointerDown}
+        onPointerDown={handlePointerDown}
         onChange={(e)=>{
           const v = e.target.value;
           if(v === CUSTOM_VALUE){
@@ -368,6 +363,24 @@ function App(){
     setData(p=> ({...p, employees: p.employees.map(e=> e.id===empId? {...e, name:newName} : e)}));
   };
 
+  // ✅ Delete employee + remove their schedule
+  const deleteEmployee = (empId)=>{
+    const emp = employees.find(e=>e.id===empId);
+    const label = emp?.name ? ` "${emp.name}"` : "";
+    if(!confirm(`Delete employee${label}? This removes them from this week's schedule.`)) return;
+
+    setData(p=>{
+      const nextEmployees = (p.employees||[]).filter(e=>e.id!==empId);
+      const nextSchedule = { ...(p.schedule||{}) };
+      delete nextSchedule[empId];
+      return { ...p, employees: nextEmployees, schedule: nextSchedule };
+    });
+
+    // If we were trying to focus that row, clear it
+    if(focusEmpId === empId) setFocusEmpId(null);
+  };
+
+  // ✅ Add employee + autofocus
   const addEmployee = ()=>{
     const id = nextEmployeeId((latestDataRef.current?.employees) || employees || []);
     setData(p=>{
@@ -517,8 +530,9 @@ function App(){
         table { border-collapse: collapse; width: 100%; table-layout: fixed; }
         th, td { border-bottom:1px solid rgba(226,232,240,.9); padding:10px; vertical-align: top; overflow:hidden; }
         th { text-align:left; font-size:13px; color:#0f172a; background:rgba(248,250,252,.8); position: sticky; top: 0; }
-        .empInput { width:100%; max-width: 200px; }
-        @media (max-width: 520px){ .empInput { max-width: 150px; } }
+        .empInput { width:100%; max-width: 190px; }
+        @media (max-width: 520px){ .empInput { max-width: 140px; } }
+
         .addRowBtn{
           width:100%;
           display:flex;
@@ -538,6 +552,22 @@ function App(){
           background:linear-gradient(135deg,#4f46e5,#06b6d4);
           color:#fff;font-size:18px;font-weight:950;
         }
+
+        .trashBtn{
+          width:34px;height:34px;border-radius:14px;
+          border:1px solid rgba(226,232,240,.95);
+          background:rgba(255,255,255,.85);
+          cursor:pointer;
+          display:grid;
+          place-items:center;
+          font-size:16px;
+        }
+        .nameCell{
+          display:flex;
+          align-items:center;
+          gap:8px;
+          min-width:0;
+        }
       `}</style>
 
       {TopBar}
@@ -552,7 +582,7 @@ function App(){
               <table style={{minWidth:760}}>
                 <thead>
                   <tr>
-                    <th style={{width:160}}>Employee</th>
+                    <th style={{width:210}}>Employee</th>
                     {days.map(d=>(
                       <th key={d.key} style={{width:170}}>
                         {d.label} <span style={{color:"#94a3b8",fontSize:12}}>{fmtDay(weekISO,d.off)}</span>
@@ -566,21 +596,35 @@ function App(){
                   {employees.map((e,idx)=>(
                     <tr key={e.id} style={{background: idx%2 ? "rgba(248,250,252,.8)" : "rgba(255,255,255,.7)"}}>
                       <td style={{fontWeight:900}}>
-                        {canEdit ? (
-                          <input
-                            className="empInput"
-                            value={e.name}
-                            placeholder="Employee name"
-                            onChange={ev=>setEmployeeName(e.id, ev.target.value)}
-                            ref={(el)=>{
-                              if(el && focusEmpId === e.id){
-                                el.focus();
-                                el.select();
-                              }
-                            }}
-                            style={{padding:"10px 12px",border:"1px solid rgba(226,232,240,.9)",borderRadius:14,fontWeight:900}}
-                          />
-                        ) : safeName(e.name)}
+                        <div className="nameCell">
+                          {canEdit ? (
+                            <>
+                              <input
+                                className="empInput"
+                                value={e.name}
+                                placeholder="Employee name"
+                                onChange={ev=>setEmployeeName(e.id, ev.target.value)}
+                                ref={(el)=>{
+                                  if(el && focusEmpId === e.id){
+                                    el.focus();
+                                    el.select();
+                                  }
+                                }}
+                                style={{padding:"10px 12px",border:"1px solid rgba(226,232,240,.9)",borderRadius:14,fontWeight:900}}
+                              />
+                              <button
+                                type="button"
+                                className="trashBtn"
+                                title="Delete employee"
+                                onClick={()=>deleteEmployee(e.id)}
+                              >
+                                🗑️
+                              </button>
+                            </>
+                          ) : (
+                            <span style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{safeName(e.name)}</span>
+                          )}
+                        </div>
                       </td>
 
                       {days.map(d=>(
@@ -620,18 +664,29 @@ function App(){
               <div key={e.id} style={cardStyle}>
                 <div style={headStyle}>
                   {canEdit ? (
-                    <input
-                      value={e.name}
-                      placeholder="Employee name"
-                      onChange={ev=>setEmployeeName(e.id, ev.target.value)}
-                      ref={(el)=>{
-                        if(el && focusEmpId === e.id){
-                          el.focus();
-                          el.select();
-                        }
-                      }}
-                      style={{width:"100%",padding:"10px 12px",border:"1px solid rgba(226,232,240,.9)",borderRadius:14,fontWeight:950}}
-                    />
+                    <div style={{display:"flex",gap:10,alignItems:"center"}}>
+                      <input
+                        value={e.name}
+                        placeholder="Employee name"
+                        onChange={ev=>setEmployeeName(e.id, ev.target.value)}
+                        ref={(el)=>{
+                          if(el && focusEmpId === e.id){
+                            el.focus();
+                            el.select();
+                          }
+                        }}
+                        style={{flex:1,padding:"10px 12px",border:"1px solid rgba(226,232,240,.9)",borderRadius:14,fontWeight:950}}
+                      />
+                      <button
+                        type="button"
+                        className="trashBtn"
+                        title="Delete employee"
+                        onClick={()=>deleteEmployee(e.id)}
+                        style={{background:"rgba(255,255,255,.95)"}}
+                      >
+                        🗑️
+                      </button>
+                    </div>
                   ) : safeName(e.name)}
                 </div>
 
