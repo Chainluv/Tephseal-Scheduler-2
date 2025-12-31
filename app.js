@@ -987,4 +987,4 @@ function CustomShiftModal({ styles, onClose, onApply }) {
   );
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+ReactDOM.render(<App/>,document.getElementById("root"));
