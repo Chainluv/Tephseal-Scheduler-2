@@ -1,40 +1,31 @@
+/* global React, ReactDOM */
+
 const { useEffect, useMemo, useRef, useState } = React;
 
-/** ---------- Time helpers (30 min steps, 8:00–20:00) ---------- */
-function minutesToLabel(m) {
-  const h24 = Math.floor(m / 60);
-  const min = m % 60;
-  const ampm = h24 >= 12 ? "PM" : "AM";
-  let h12 = h24 % 12;
-  if (h12 === 0) h12 = 12;
-  const mm = min === 0 ? "" : `:${String(min).padStart(2, "0")}`;
-  return `${h12}${mm}${ampm}`;
+/** =========================
+ * Helpers
+ * ========================= */
+
+function pad2(n) {
+  return String(n).padStart(2, "0");
 }
 
-function labelFromRange(startM, endM) {
-  return `${minutesToLabel(startM)}–${minutesToLabel(endM)}`;
+function toISODate(d) {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
 
-function clampToMonday(d) {
-  const date = new Date(d);
-  const day = date.getDay(); // Sun=0
-  const diff = date.getDate() - day + (day === 0 ? -6 : 1); // Monday start
-  date.setDate(diff);
-  date.setHours(0, 0, 0, 0);
-  return date;
+function parseISODate(s) {
+  const [y, m, d] = s.split("-").map(Number);
+  return new Date(y, m - 1, d);
 }
 
-function ymd(d) {
-  const dt = new Date(d);
-  const yyyy = dt.getFullYear();
-  const mm = String(dt.getMonth() + 1).padStart(2, "0");
-  const dd = String(dt.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
-}
-
-function prettyWeekLabel(monday) {
-  const d = new Date(monday);
-  return d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+function startOfWeekMonday(date) {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  const day = d.getDay(); // 0 Sun, 1 Mon...
+  const diff = day === 0 ? -6 : 1 - day;
+  d.setDate(d.getDate() + diff);
+  return d;
 }
 
 function addDays(date, n) {
@@ -43,31 +34,43 @@ function addDays(date, n) {
   return d;
 }
 
-function hoursFromShiftLabel(label) {
-  if (!label || label === "Off") return 0;
-  const parts = label.split("–");
-  if (parts.length !== 2) return 0;
-
-  const parse = (s) => {
-    // e.g. "8AM", "11:30AM"
-    const m = s.trim().match(/^(\d{1,2})(?::(\d{2}))?(AM|PM)$/i);
-    if (!m) return null;
-    let h = parseInt(m[1], 10);
-    const mins = m[2] ? parseInt(m[2], 10) : 0;
-    const ampm = m[3].toUpperCase();
-    if (ampm === "PM" && h !== 12) h += 12;
-    if (ampm === "AM" && h === 12) h = 0;
-    return h * 60 + mins;
-  };
-
-  const a = parse(parts[0]);
-  const b = parse(parts[1]);
-  if (a == null || b == null) return 0;
-  const diff = b - a;
-  return diff > 0 ? diff / 60 : 0;
+function addWeeks(date, n) {
+  return addDays(date, n * 7);
 }
 
-/** ---------- Shift options ---------- */
+function formatWeekLabel(mondayDate) {
+  const opts = { weekday: "long", month: "long", day: "numeric" };
+  return `Week of ${mondayDate.toLocaleDateString(undefined, opts)}`;
+}
+
+function formatDayChip(date) {
+  const dow = date.toLocaleDateString(undefined, { weekday: "short" });
+  const mon = date.toLocaleDateString(undefined, { month: "short" });
+  const day = date.getDate();
+  return { dow, mon, day };
+}
+
+function clamp(n, a, b) {
+  return Math.max(a, Math.min(b, n));
+}
+
+function minutesToLabel(mins) {
+  let h = Math.floor(mins / 60);
+  const m = mins % 60;
+  const ampm = h >= 12 ? "PM" : "AM";
+  h = h % 12;
+  if (h === 0) h = 12;
+  return `${h}${m === 0 ? "" : ":" + pad2(m)}${ampm}`;
+}
+
+function shiftLabelFromMinutes(startMin, endMin) {
+  return `${minutesToLabel(startMin)}–${minutesToLabel(endMin)}`;
+}
+
+/** =========================
+ * Shift options
+ * ========================= */
+
 const COMMON_SHIFTS = [
   "Off",
   "8AM–5PM",
@@ -81,840 +84,911 @@ const COMMON_SHIFTS = [
   "4PM–8PM",
 ];
 
-// Special value used only for triggering the custom modal
-const CUSTOM_TRIGGER = "__CUSTOM__";
+function normalizeShiftLabel(s) {
+  return (s || "").replace(/\s+/g, "").toUpperCase();
+}
 
-/** ---------- Main App ---------- */
+function isCustomShiftValue(value) {
+  const nv = normalizeShiftLabel(value);
+  const isCommon = COMMON_SHIFTS.some((x) => normalizeShiftLabel(x) === nv);
+  return !isCommon && nv !== normalizeShiftLabel("Off") && nv !== "";
+}
+
+/** =========================
+ * Storage (local only for now)
+ * ========================= */
+
+function storageKey(storeId, weekISO) {
+  return `tephseal:schedule:${storeId}:${weekISO}`;
+}
+
+function cryptoId() {
+  return Math.random().toString(16).slice(2) + Date.now().toString(16);
+}
+
+function makeOffWeek() {
+  return ["Off", "Off", "Off", "Off", "Off", "Off", "Off"];
+}
+
+function defaultSchedule(storeId, weekMondayISO) {
+  return {
+    meta: {
+      storeId,
+      storeName: "Murdock Hyundai",
+      weekMondayISO,
+      updatedAt: Date.now(),
+    },
+    employees: [
+      { id: cryptoId(), name: "Tyler", shifts: makeOffWeek() },
+      { id: cryptoId(), name: "Derrick", shifts: makeOffWeek() },
+      { id: cryptoId(), name: "Jonathan", shifts: makeOffWeek() },
+    ],
+  };
+}
+
+function loadScheduleLocal(storeId, weekMondayISO) {
+  const raw = localStorage.getItem(storageKey(storeId, weekMondayISO));
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function saveScheduleLocal(storeId, weekMondayISO, scheduleObj) {
+  localStorage.setItem(storageKey(storeId, weekMondayISO), JSON.stringify(scheduleObj));
+}
+
+function copyScheduleToNewWeek(scheduleObj, storeId, newWeekISO) {
+  const next = JSON.parse(JSON.stringify(scheduleObj));
+  next.meta = {
+    ...(next.meta || {}),
+    storeId,
+    weekMondayISO: newWeekISO,
+    updatedAt: Date.now(),
+  };
+  return next;
+}
+
+/** =========================
+ * Hours (for totals)
+ * ========================= */
+
+function parseTimeLabel(s) {
+  const t = s.toUpperCase().replace(/\s+/g, "");
+  const am = t.endsWith("AM");
+  const pm = t.endsWith("PM");
+  if (!am && !pm) return null;
+
+  const core = t.slice(0, -2);
+  const [hhStr, mmStr] = core.split(":");
+  let hh = Number(hhStr);
+  let mm = mmStr ? Number(mmStr) : 0;
+  if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null;
+
+  if (hh === 12) hh = 0;
+  const h24 = hh + (pm ? 12 : 0);
+  return h24 * 60 + clamp(mm, 0, 59);
+}
+
+function shiftToMinutesRange(shiftLabel) {
+  if (!shiftLabel || normalizeShiftLabel(shiftLabel) === normalizeShiftLabel("Off")) return null;
+  const parts = shiftLabel.replace("-", "–").split("–");
+  if (parts.length !== 2) return null;
+
+  const a = parseTimeLabel(parts[0].trim());
+  const b = parseTimeLabel(parts[1].trim());
+  if (a == null || b == null) return null;
+  return { startMin: a, endMin: b };
+}
+
+function shiftHours(shiftLabel) {
+  const r = shiftToMinutesRange(shiftLabel);
+  if (!r) return 0;
+  let { startMin, endMin } = r;
+  startMin = clamp(startMin, 480, 1200); // 8AM
+  endMin = clamp(endMin, 480, 1200);     // 8PM
+  return Math.max(0, endMin - startMin) / 60;
+}
+
+/** =========================
+ * App
+ * ========================= */
+
 function App() {
-  const params = new URLSearchParams(window.location.search);
+  const url = useMemo(() => new URL(window.location.href), []);
+  const storeId = (url.searchParams.get("store") || "murdock-murray").trim();
+  const isManager = url.searchParams.get("manager") === "1";
+  const weekParam = url.searchParams.get("week");
 
-  const storeKey = (params.get("store") || "default").trim();
-  const isManager = params.get("manager") === "1";
-
-  // Employee view should be locked to the week in the link (if provided)
-  const weekParam = params.get("week"); // YYYY-MM-DD optional
-  const initialWeek = useMemo(() => {
-    if (weekParam && /^\d{4}-\d{2}-\d{2}$/.test(weekParam)) {
-      return clampToMonday(new Date(weekParam + "T00:00:00"));
-    }
-    return clampToMonday(new Date());
+  // ✅ responsive flag to fix mobile header layout
+  const [isNarrow, setIsNarrow] = useState(() => window.innerWidth <= 520);
+  useEffect(() => {
+    const onResize = () => setIsNarrow(window.innerWidth <= 520);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  const [weekStart, setWeekStart] = useState(initialWeek);
+  const initialMonday = useMemo(() => {
+    return weekParam ? startOfWeekMonday(parseISODate(weekParam)) : startOfWeekMonday(new Date());
+  }, [weekParam]);
 
-  // Store + schedule data are stored per-store per-week in localStorage (simple + reliable)
-  const storageKey = useMemo(() => `tephseal:${storeKey}:${ymd(weekStart)}`, [storeKey, weekStart]);
+  const [monday, setMonday] = useState(initialMonday);
+  const weekISO = useMemo(() => toISODate(monday), [monday]);
 
-  const [storeName, setStoreName] = useState("Murdock Hyundai");
-  const [employees, setEmployees] = useState([
-    { id: 1, name: "Tyler", shifts: {} },
-    { id: 2, name: "Derrick", shifts: {} },
-    { id: 3, name: "Jonathan", shifts: {} },
-  ]);
+  const [schedule, setSchedule] = useState(() => {
+    const existing = loadScheduleLocal(storeId, weekISO);
+    return existing || defaultSchedule(storeId, weekISO);
+  });
 
-  // Custom shift modal
-  const [customOpen, setCustomOpen] = useState(false);
-  const [customFor, setCustomFor] = useState(null); // { empId, dayKey }
-  const [customStart, setCustomStart] = useState(8 * 60);
-  const [customEnd, setCustomEnd] = useState(17 * 60);
+  const [toast, setToast] = useState(null);
+  const toastTimer = useRef(null);
 
-  // Remember prior select values to avoid "Custom already selected" issue
-  const lastSelectValueRef = useRef({}); // key: `${empId}|${dayKey}`
+  const [customModal, setCustomModal] = useState(null); // { empId, dayIndex }
+  const [activeTab, setActiveTab] = useState("all"); // kept for UI chips
 
-  // Load saved week data
   useEffect(() => {
-    const saved = localStorage.getItem(storageKey);
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (parsed.storeName) setStoreName(parsed.storeName);
-        if (Array.isArray(parsed.employees)) setEmployees(parsed.employees);
-      } catch (e) {
-        // ignore
-      }
+    const existing = loadScheduleLocal(storeId, weekISO);
+    if (existing) {
+      setSchedule(existing);
     } else {
-      // If no saved schedule for this week, keep employees but reset shifts to Off
-      setEmployees((prev) =>
-        prev.map((e) => ({
-          ...e,
-          shifts: {},
-        }))
-      );
+      // only managers auto-copy from previous week
+      const prevISO = toISODate(addWeeks(monday, -1));
+      const prev = loadScheduleLocal(storeId, prevISO);
+      if (prev && isManager) {
+        const copied = copyScheduleToNewWeek(prev, storeId, weekISO);
+        setSchedule(copied);
+        saveScheduleLocal(storeId, weekISO, copied);
+      } else {
+        setSchedule(defaultSchedule(storeId, weekISO));
+      }
     }
-  }, [storageKey]);
+  }, [storeId, weekISO]);
 
-  // Days for this week (Mon-Sun)
-  const days = useMemo(() => {
-    return Array.from({ length: 7 }).map((_, i) => {
-      const d = addDays(weekStart, i);
-      const dayKey = ymd(d);
-      return {
-        date: d,
-        dayKey,
-        dow: d.toLocaleDateString("en-US", { weekday: "short" }),
-        label: d.toLocaleDateString("en-US", { month: "short", day: "numeric" }),
-      };
-    });
-  }, [weekStart]);
+  useEffect(() => {
+    setSchedule((prev) => ({
+      ...prev,
+      meta: { ...(prev.meta || {}), storeId, weekMondayISO: weekISO },
+    }));
+  }, [storeId, weekISO]);
 
-  function save() {
-    const payload = {
-      storeName,
-      employees,
-      weekStart: ymd(weekStart),
-      updatedAt: new Date().toISOString(),
-    };
-    localStorage.setItem(storageKey, JSON.stringify(payload));
-    toast("Saved ✅");
+  function showToast(msg) {
+    setToast(msg);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 2400);
   }
 
-  function shareReadOnly() {
-    // Save first, then give a read-only link for THIS week
-    save();
-    const link = `${window.location.origin}${window.location.pathname}?store=${encodeURIComponent(
-      storeKey
-    )}&week=${encodeURIComponent(ymd(weekStart))}`;
-    copyToClipboard(link);
-    toast("Share link copied 📎");
+  function onPrevWeek() {
+    setMonday((d) => addWeeks(d, -1));
   }
 
-  function goPrevWeek() {
-    const prev = addDays(weekStart, -7);
-    setWeekStart(clampToMonday(prev));
+  function onNextWeek() {
+    setMonday((d) => addWeeks(d, +1));
   }
 
-  function goNextWeek() {
-    const next = addDays(weekStart, 7);
-    setWeekStart(clampToMonday(next));
+  function saveNow() {
+    const next = { ...schedule, meta: { ...(schedule.meta || {}), updatedAt: Date.now() } };
+    setSchedule(next);
+    saveScheduleLocal(storeId, weekISO, next);
+    showToast("Saved ✅");
+  }
+
+  async function shareReadOnlyLink() {
+    const link = `${window.location.origin}${window.location.pathname}?store=${encodeURIComponent(storeId)}&week=${encodeURIComponent(weekISO)}`;
+    try {
+      await navigator.clipboard.writeText(link);
+      showToast("Viewer link copied ✅");
+    } catch {
+      window.prompt("Copy this viewer link:", link);
+    }
   }
 
   function updateEmployeeName(empId, name) {
-    setEmployees((prev) => prev.map((e) => (e.id === empId ? { ...e, name } : e)));
+    setSchedule((prev) => ({
+      ...prev,
+      employees: prev.employees.map((e) => (e.id === empId ? { ...e, name } : e)),
+    }));
   }
 
   function deleteEmployee(empId) {
-    if (!confirm("Delete this employee row?")) return;
-    setEmployees((prev) => prev.filter((e) => e.id !== empId));
-    toast("Employee removed 🗑️");
+    setSchedule((prev) => ({
+      ...prev,
+      employees: prev.employees.filter((e) => e.id !== empId),
+    }));
+    showToast("Employee deleted");
   }
 
-  function addEmployee() {
-    const id = Date.now();
-    setEmployees((prev) => [...prev, { id, name: "", shifts: {} }]);
-    toast("New employee row added ➕");
+  function addEmployee(name) {
+    const nm = (name || "").trim();
+    if (!nm) return;
+    setSchedule((prev) => ({
+      ...prev,
+      employees: [...prev.employees, { id: cryptoId(), name: nm, shifts: makeOffWeek() }],
+    }));
+    showToast("Employee added ✅");
   }
 
-  function openCustom(empId, dayKey) {
-    // Default custom to a sensible range
-    setCustomStart(8 * 60);
-    setCustomEnd(17 * 60);
-    setCustomFor({ empId, dayKey });
-    setCustomOpen(true);
-  }
-
-  function applyCustom() {
-    if (!customFor) return;
-    const { empId, dayKey } = customFor;
-
-    if (customEnd <= customStart) {
-      toast("End time must be after start time.");
+  function setShift(empId, dayIndex, value) {
+    if (value === "__CUSTOM__") {
+      setCustomModal({ empId, dayIndex });
       return;
     }
-    if (customStart < 8 * 60 || customEnd > 20 * 60) {
-      toast("Shift must stay between 8AM and 8PM.");
-      return;
-    }
-
-    const label = labelFromRange(customStart, customEnd);
-
-    setEmployees((prev) =>
-      prev.map((e) =>
-        e.id === empId ? { ...e, shifts: { ...e.shifts, [dayKey]: label } } : e
-      )
-    );
-
-    // Update last select value
-    lastSelectValueRef.current[`${empId}|${dayKey}`] = label;
-
-    setCustomOpen(false);
-    setCustomFor(null);
-    toast("Custom shift set ✅");
+    setSchedule((prev) => ({
+      ...prev,
+      employees: prev.employees.map((e) => {
+        if (e.id !== empId) return e;
+        const shifts = [...e.shifts];
+        shifts[dayIndex] = value;
+        return { ...e, shifts };
+      }),
+    }));
   }
 
-  function setShift(empId, dayKey, value) {
-    // Custom trigger always opens modal, even if "Custom…" was already selected before
-    if (value === CUSTOM_TRIGGER) {
-      openCustom(empId, dayKey);
-      return;
-    }
-
-    setEmployees((prev) =>
-      prev.map((e) =>
-        e.id === empId ? { ...e, shifts: { ...e.shifts, [dayKey]: value } } : e
-      )
-    );
-    lastSelectValueRef.current[`${empId}|${dayKey}`] = value;
+  function applyCustomShift(empId, dayIndex, startMin, endMin) {
+    const label = shiftLabelFromMinutes(startMin, endMin);
+    setSchedule((prev) => ({
+      ...prev,
+      employees: prev.employees.map((e) => {
+        if (e.id !== empId) return e;
+        const shifts = [...e.shifts];
+        shifts[dayIndex] = label;
+        return { ...e, shifts };
+      }),
+    }));
   }
 
-  // Week totals
+  const days = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(monday, i)), [monday]);
+
   const weeklyTotals = useMemo(() => {
-    const totals = employees.map((e) => {
-      let hours = 0;
-      for (const d of days) hours += hoursFromShiftLabel(e.shifts[d.dayKey] || "Off");
-      return { id: e.id, name: e.name || "—", hours: Math.round(hours * 10) / 10 };
+    return schedule.employees.map((e) => {
+      const total = e.shifts.reduce((sum, s) => sum + shiftHours(s), 0);
+      return { id: e.id, total: Math.round(total * 2) / 2 };
     });
-    const weekTotal = totals.reduce((a, t) => a + t.hours, 0);
-    return { totals, weekTotal: Math.round(weekTotal * 10) / 10 };
-  }, [employees, days]);
+  }, [schedule.employees]);
 
-  // Employee view rules: no prev/next, and if week= is provided we lock it
-  const lockedWeek = !!weekParam && !isManager;
+  const weekTotal = useMemo(() => weeklyTotals.reduce((s, x) => s + x.total, 0), [weeklyTotals]);
+
+  const storeName = schedule.meta?.storeName || "Murdock Hyundai";
+
+  // share link always pins a week (employees can’t flip weeks)
+  const viewerLink = `${window.location.origin}${window.location.pathname}?store=${encodeURIComponent(storeId)}&week=${encodeURIComponent(weekISO)}`;
+  const managerLink = `${window.location.origin}${window.location.pathname}?store=${encodeURIComponent(storeId)}&manager=1`;
+
+  /** Styles */
+  const styles = useMemo(() => ({
+    page: {
+      minHeight: "100vh",
+      background: "linear-gradient(180deg,#f4fbff 0%, #eef4ff 40%, #f7fbff 100%)",
+      padding: "16px",
+      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+      color: "#0b1220",
+    },
+    shell: { maxWidth: 980, margin: "0 auto" },
+
+    topCard: {
+      background: "rgba(255,255,255,.88)",
+      border: "1px solid rgba(16,24,40,.08)",
+      borderRadius: 20,
+      padding: 14,
+      boxShadow: "0 12px 30px rgba(16,24,40,.08)",
+      backdropFilter: "blur(10px)",
+    },
+
+    // ✅ changed: column layout on narrow screens
+    topRow: {
+      display: "flex",
+      gap: 12,
+      alignItems: isNarrow ? "stretch" : "center",
+      justifyContent: "space-between",
+      flexWrap: "wrap",
+      flexDirection: isNarrow ? "column" : "row",
+    },
+
+    brandRow: {
+      display: "flex",
+      gap: 12,
+      alignItems: "center",
+      minWidth: 220,
+      flex: "1 1 280px",
+    },
+    logo: {
+      width: 52,
+      height: 52,
+      borderRadius: 18,
+      background: "linear-gradient(135deg,#4f7cff,#32d2aa)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      color: "white",
+      fontWeight: 900,
+      fontSize: 20,
+      flex: "0 0 auto",
+    },
+    titleBlock: { minWidth: 0, flex: 1 },
+
+    // ✅ changed: make label not crowd on mobile
+    label: {
+      fontSize: 12,
+      letterSpacing: 1.3,
+      opacity: 0.6,
+      fontWeight: 800,
+      textTransform: "uppercase",
+      marginBottom: 4,
+    },
+
+    // ✅ changed: allow store title to wrap nicely
+    storeTitle: {
+      fontSize: 20,
+      fontWeight: 900,
+      lineHeight: 1.15,
+      maxWidth: "100%",
+      whiteSpace: "normal",
+      wordBreak: "break-word",
+    },
+
+    subTitle: { fontSize: 13, opacity: 0.7, fontWeight: 700, marginTop: 4 },
+
+    // ✅ changed: controls drop under title on mobile and always wrap
+    controls: {
+      display: "flex",
+      gap: 8,
+      flexWrap: "wrap",
+      justifyContent: isNarrow ? "flex-start" : "flex-end",
+      alignItems: "center",
+      width: isNarrow ? "100%" : "auto",
+    },
+
+    btn: {
+      border: "1px solid rgba(0,0,0,.10)",
+      background: "rgba(255,255,255,.92)",
+      padding: "10px 12px",
+      borderRadius: 999,
+      fontWeight: 800,
+      color: "#1c4ed8",
+      boxShadow: "0 8px 18px rgba(16,24,40,.06)",
+      cursor: "pointer",
+      display: "inline-flex",
+      gap: 6,
+      alignItems: "center",
+      whiteSpace: "nowrap",
+    },
+    btnPrimary: {
+      background: "linear-gradient(135deg,#4f7cff,#32d2aa)",
+      color: "white",
+      border: "none",
+    },
+
+    tabsWrap: {
+      marginTop: 12,
+      background: "linear-gradient(135deg,#4f7cff,#6a5cff)",
+      borderRadius: 18,
+      padding: 8,
+      overflowX: "auto",
+    },
+    tabsRow: { display: "flex", gap: 8, minWidth: 520 },
+    chip: (active) => ({
+      border: "none",
+      borderRadius: 16,
+      padding: "10px 12px",
+      fontWeight: 900,
+      background: active ? "rgba(255,255,255,.95)" : "rgba(255,255,255,.18)",
+      color: active ? "#0b1220" : "rgba(255,255,255,.92)",
+      minWidth: 86,
+      cursor: "pointer",
+      textAlign: "left",
+    }),
+    chipTop: { fontSize: 14, fontWeight: 900 },
+    chipSub: { fontSize: 12, opacity: 0.85, fontWeight: 800 },
+
+    sectionCard: {
+      marginTop: 14,
+      background: "rgba(255,255,255,.92)",
+      border: "1px solid rgba(16,24,40,.08)",
+      borderRadius: 22,
+      overflow: "hidden",
+      boxShadow: "0 18px 40px rgba(16,24,40,.08)",
+    },
+    sectionHeader: {
+      padding: "14px 16px",
+      color: "white",
+      fontWeight: 950,
+      fontSize: 20,
+      background: "linear-gradient(135deg,#4f7cff,#32d2aa)",
+    },
+
+    tableWrap: { padding: 12, overflowX: "auto" },
+    table: { width: "100%", borderCollapse: "separate", borderSpacing: "0 10px", minWidth: 640 },
+    th: { textAlign: "left", fontSize: 13, opacity: 0.7, fontWeight: 900, padding: "0 10px 6px 10px" },
+    trRow: { background: "rgba(250,252,255,.9)", border: "1px solid rgba(0,0,0,.06)" },
+    td: { padding: 10, verticalAlign: "middle" },
+
+    nameInput: {
+      width: 200,
+      maxWidth: "200px",
+      padding: "12px 14px",
+      borderRadius: 18,
+      border: "1px solid rgba(0,0,0,.10)",
+      fontWeight: 900,
+      fontSize: 16,
+      outline: "none",
+      background: "white",
+    },
+    select: {
+      width: 150,
+      padding: "10px 12px",
+      borderRadius: 999,
+      border: "1px solid rgba(0,0,0,.10)",
+      fontWeight: 900,
+      color: "#1c4ed8",
+      background: "white",
+      outline: "none",
+    },
+    pill: {
+      display: "inline-block",
+      padding: "10px 14px",
+      borderRadius: 999,
+      border: "1px solid rgba(0,0,0,.10)",
+      fontWeight: 900,
+      color: "#1c4ed8",
+      background: "white",
+      minWidth: 120,
+      textAlign: "center",
+    },
+    trashBtn: {
+      width: 44,
+      height: 44,
+      borderRadius: 16,
+      border: "1px solid rgba(0,0,0,.10)",
+      background: "white",
+      cursor: "pointer",
+      fontSize: 18,
+    },
+
+    addBarWrap: { padding: 12, paddingTop: 0 },
+    addBarInner: { width: "min(560px, 100%)", margin: "0 auto" },
+    addBar: {
+      width: "100%",
+      padding: "12px 14px",
+      borderRadius: 18,
+      border: "1px dashed rgba(28,78,216,.35)",
+      background: "rgba(79,124,255,.08)",
+      color: "#1c4ed8",
+      fontWeight: 950,
+      cursor: "pointer",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 10,
+    },
+
+    totalsCard: {
+      marginTop: 14,
+      background: "rgba(255,255,255,.92)",
+      border: "1px solid rgba(16,24,40,.08)",
+      borderRadius: 22,
+      overflow: "hidden",
+      boxShadow: "0 18px 40px rgba(16,24,40,.08)",
+    },
+    totalsHeader: {
+      padding: "14px 16px",
+      fontWeight: 950,
+      fontSize: 18,
+      color: "#0b1220",
+      background: "rgba(79,124,255,.10)",
+    },
+    totalsItem: {
+      padding: "12px 16px",
+      display: "flex",
+      justifyContent: "space-between",
+      fontWeight: 900,
+      borderTop: "1px solid rgba(16,24,40,.06)",
+    },
+    weekTotal: {
+      padding: "14px 16px",
+      display: "flex",
+      justifyContent: "space-between",
+      fontWeight: 950,
+      fontSize: 18,
+      borderTop: "1px solid rgba(16,24,40,.06)",
+      background: "rgba(50,210,170,.10)",
+    },
+
+    toast: {
+      position: "fixed",
+      left: "50%",
+      bottom: 20,
+      transform: "translateX(-50%)",
+      background: "rgba(14,20,40,.92)",
+      color: "white",
+      padding: "10px 14px",
+      borderRadius: 999,
+      fontWeight: 900,
+      zIndex: 9999,
+      boxShadow: "0 16px 40px rgba(0,0,0,.25)",
+    },
+
+    modalOverlay: {
+      position: "fixed",
+      inset: 0,
+      background: "rgba(0,0,0,.35)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 16,
+      zIndex: 9999,
+    },
+    modal: {
+      width: "min(520px, 100%)",
+      background: "white",
+      borderRadius: 22,
+      border: "1px solid rgba(0,0,0,.10)",
+      boxShadow: "0 24px 70px rgba(0,0,0,.30)",
+      overflow: "hidden",
+    },
+    modalHeader: {
+      padding: "14px 16px",
+      fontWeight: 950,
+      background: "linear-gradient(135deg,#4f7cff,#32d2aa)",
+      color: "white",
+    },
+    modalBody: { padding: 16 },
+    modalRow: { display: "flex", gap: 10, flexWrap: "wrap" },
+    modalSelect: {
+      flex: "1 1 160px",
+      padding: "12px 12px",
+      borderRadius: 16,
+      border: "1px solid rgba(0,0,0,.10)",
+      fontWeight: 900,
+      outline: "none",
+    },
+    modalActions: {
+      display: "flex",
+      gap: 10,
+      justifyContent: "flex-end",
+      padding: 16,
+      borderTop: "1px solid rgba(0,0,0,.08)",
+      background: "rgba(79,124,255,.06)",
+    },
+
+    storeInput: {
+      width: "min(420px, 100%)",
+      maxWidth: 420,
+      fontSize: 20,
+      fontWeight: 950,
+      border: "1px solid rgba(0,0,0,.10)",
+      borderRadius: 16,
+      padding: "10px 12px",
+      outline: "none",
+    },
+  }), [isNarrow]);
 
   return (
-    <div className="page">
-      <div className="shell">
+    <div style={styles.page}>
+      <div style={styles.shell}>
+        {/* Top header */}
+        <div style={styles.topCard}>
+          <div style={styles.topRow}>
+            <div style={styles.brandRow}>
+              <div style={styles.logo}>S</div>
+              <div style={styles.titleBlock}>
+                <div style={styles.label}>Schedule</div>
 
-        {/* TOP CARD */}
-        <div className="topCard">
-          <div className="topRow">
-            <div className="avatar">S</div>
+                {isManager ? (
+                  <input
+                    value={storeName}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setSchedule((prev) => ({
+                        ...prev,
+                        meta: { ...(prev.meta || {}), storeName: v },
+                      }));
+                    }}
+                    placeholder="Store name"
+                    style={styles.storeInput}
+                  />
+                ) : (
+                  <div style={styles.storeTitle}>{storeName}</div>
+                )}
 
-            <div className="topInfo">
-              <div className="topLabel">SCHEDULE</div>
-
-              {isManager ? (
-                <input
-                  className="storeInput"
-                  value={storeName}
-                  onChange={(e) => setStoreName(e.target.value)}
-                  aria-label="Store name"
-                />
-              ) : (
-                <div className="storeTitle">{storeName}</div>
-              )}
-
-              <div className="weekLine">Week of Monday, {prettyWeekLabel(weekStart)}</div>
-            </div>
-          </div>
-
-          {/* Buttons area: wraps nicely, never overlaps */}
-          {isManager && (
-            <div className="btnBar">
-              <button className="pill ghost" onClick={goPrevWeek} disabled={lockedWeek}>
-                ◀ Prev
-              </button>
-              <button className="pill ghost" onClick={goNextWeek} disabled={lockedWeek}>
-                Next ▶
-              </button>
-              <button className="pill primary" onClick={save}>
-                Save
-              </button>
-              <button className="pill ghost" onClick={shareReadOnly}>
-                Share Link
-              </button>
-            </div>
-          )}
-        </div>
-
-        {/* DAY TABS */}
-        <div className="tabsCard">
-          <div className="tabsStrip">
-            <div className="tab active">
-              <div className="tabTop">All</div>
-              <div className="tabBottom">Week</div>
-            </div>
-            {days.slice(0, 2).map((d) => (
-              <div className="tab" key={d.dayKey}>
-                <div className="tabTop">{d.dow}</div>
-                <div className="tabBottom">{d.label}</div>
+                <div style={styles.subTitle}>{formatWeekLabel(monday)}</div>
               </div>
-            ))}
-            {/* keep it simple in header; full week table below */}
+            </div>
+
+            {/* ✅ Employees do NOT get Prev/Next */}
+            <div style={styles.controls}>
+              {isManager ? (
+                <>
+                  <button style={styles.btn} onClick={onPrevWeek}>◀ Prev</button>
+                  <button style={styles.btn} onClick={onNextWeek}>Next ▶</button>
+                  <button style={{ ...styles.btn, ...styles.btnPrimary }} onClick={saveNow}>Save</button>
+                  <button style={styles.btn} onClick={shareReadOnlyLink}>Share Link</button>
+                </>
+              ) : (
+                <button
+                  style={styles.btn}
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(viewerLink);
+                      showToast("Viewer link copied ✅");
+                    } catch {
+                      window.prompt("Copy this link:", viewerLink);
+                    }
+                  }}
+                >
+                  Copy Link
+                </button>
+              )}
+            </div>
           </div>
         </div>
 
-        {/* FULL WEEK CARD */}
-        <div className="card">
-          <div className="cardHeader">
-            <div className="cardTitle">Full Week</div>
-          </div>
-
-          <div className="tableWrap">
-            <div className="tableHead">
-              <div className="th employeeTh">Employee</div>
-              {days.map((d) => (
-                <div className="th dayTh" key={d.dayKey}>
-                  {d.dow} <span className="muted">{d.label}</span>
-                </div>
-              ))}
-              <div className="th totalTh">Total</div>
-              {isManager && <div className="th actionTh"></div>}
-            </div>
-
-            {employees.map((emp) => {
-              const total = weeklyTotals.totals.find((t) => t.id === emp.id)?.hours ?? 0;
-
+        {/* Tabs (kept; pinned week anyway) */}
+        <div style={styles.tabsWrap}>
+          <div style={styles.tabsRow}>
+            <button style={styles.chip(activeTab === "all")} onClick={() => setActiveTab("all")}>
+              <div style={styles.chipTop}>All</div>
+              <div style={styles.chipSub}>Week</div>
+            </button>
+            {days.map((d, i) => {
+              const chip = formatDayChip(d);
+              const active = activeTab === String(i);
               return (
-                <div className="tableRow" key={emp.id}>
-                  <div className="td employeeTd">
-                    <input
-                      className="nameInput"
-                      value={emp.name}
-                      onChange={(e) => updateEmployeeName(emp.id, e.target.value)}
-                      disabled={!isManager}
-                      placeholder={isManager ? "Name" : ""}
-                    />
-                  </div>
-
-                  {days.map((d) => {
-                    const current = emp.shifts[d.dayKey] || "Off";
-                    const selectKey = `${emp.id}|${d.dayKey}`;
-                    const last = lastSelectValueRef.current[selectKey] || current;
-
-                    return (
-                      <div className="td dayTd" key={d.dayKey}>
-                        {isManager ? (
-                          <select
-                            className="shiftSelect"
-                            value={current === "Custom…" ? last : current}
-                            onChange={(e) => {
-                              const val = e.target.value;
-                              if (val === CUSTOM_TRIGGER) {
-                                // Immediately reset visual selection back to last known shift
-                                // (so you can click Custom… again even if previously "custom")
-                                e.target.value = last;
-                                openCustom(emp.id, d.dayKey);
-                                return;
-                              }
-                              setShift(emp.id, d.dayKey, val);
-                            }}
-                          >
-                            {COMMON_SHIFTS.map((s) => (
-                              <option key={s} value={s}>
-                                {s}
-                              </option>
-                            ))}
-                            <option value={CUSTOM_TRIGGER}>Custom…</option>
-                          </select>
-                        ) : (
-                          <div className={`chip ${current === "Off" ? "chipOff" : ""}`}>
-                            {current}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-
-                  <div className="td totalTd">{total}</div>
-
-                  {isManager && (
-                    <div className="td actionTd">
-                      <button className="trashBtn" onClick={() => deleteEmployee(emp.id)} title="Delete">
-                        🗑️
-                      </button>
-                    </div>
-                  )}
-                </div>
+                <button key={i} style={styles.chip(active)} onClick={() => setActiveTab(String(i))}>
+                  <div style={styles.chipTop}>{chip.dow}</div>
+                  <div style={styles.chipSub}>{chip.mon} {chip.day}</div>
+                </button>
               );
             })}
-
-            {/* Always-visible plus row */}
-            {isManager && (
-              <div className="addRow" onClick={addEmployee} role="button" tabIndex={0}>
-                <div className="addInner">
-                  <span className="plus">＋</span>
-                  <span className="addText">Add employee</span>
-                </div>
-              </div>
-            )}
           </div>
         </div>
 
-        {/* WEEKLY TOTALS */}
-        <div className="card totalsCard">
-          <div className="totalsHeader">Weekly Totals</div>
-          {weeklyTotals.totals.map((t) => (
-            <div className="totalsRow" key={t.id}>
-              <div className="totalsName">{t.name}</div>
-              <div className="totalsHours">{t.hours}</div>
+        {/* Full week section */}
+        <div style={styles.sectionCard}>
+          <div style={styles.sectionHeader}>Full Week</div>
+
+          <div style={styles.tableWrap}>
+            <table style={styles.table}>
+              <thead>
+                <tr>
+                  <th style={styles.th}>Employee</th>
+                  {days.map((d, i) => {
+                    const chip = formatDayChip(d);
+                    return (
+                      <th key={i} style={styles.th}>
+                        {chip.dow} <span style={{ opacity: 0.6, fontWeight: 800 }}>{chip.mon} {chip.day}</span>
+                      </th>
+                    );
+                  })}
+                  <th style={styles.th}>Total</th>
+                  {isManager ? <th style={styles.th}></th> : null}
+                </tr>
+              </thead>
+
+              <tbody>
+                {schedule.employees.map((emp) => {
+                  const total = weeklyTotals.find((x) => x.id === emp.id)?.total ?? 0;
+
+                  return (
+                    <tr key={emp.id} style={styles.trRow}>
+                      <td style={styles.td}>
+                        {isManager ? (
+                          <input
+                            style={styles.nameInput}
+                            value={emp.name}
+                            onChange={(e) => updateEmployeeName(emp.id, e.target.value)}
+                            placeholder="Employee name"
+                          />
+                        ) : (
+                          <div style={{ fontWeight: 950, fontSize: 16 }}>{emp.name}</div>
+                        )}
+                      </td>
+
+                      {days.map((_, dayIndex) => {
+                        const value = emp.shifts[dayIndex] || "Off";
+                        const isCustom = isCustomShiftValue(value);
+
+                        if (!isManager) {
+                          return (
+                            <td key={dayIndex} style={styles.td}>
+                              <span style={styles.pill}>{value}</span>
+                            </td>
+                          );
+                        }
+
+                        return (
+                          <td key={dayIndex} style={styles.td}>
+                            <select
+                              style={styles.select}
+                              value={value}
+                              onChange={(e) => setShift(emp.id, dayIndex, e.target.value)}
+                              onPointerDown={(e) => {
+                                if (isCustom) {
+                                  e.preventDefault();
+                                  setCustomModal({ empId: emp.id, dayIndex });
+                                }
+                              }}
+                            >
+                              {isCustom ? <option value={value}>{value}</option> : null}
+                              {COMMON_SHIFTS.map((s) => <option key={s} value={s}>{s}</option>)}
+                              <option value="__CUSTOM__">Custom…</option>
+                            </select>
+                          </td>
+                        );
+                      })}
+
+                      <td style={styles.td}>
+                        <div style={{ fontWeight: 950, fontSize: 18 }}>{total}</div>
+                      </td>
+
+                      {isManager ? (
+                        <td style={styles.td}>
+                          <button
+                            style={styles.trashBtn}
+                            onClick={() => {
+                              if (confirm(`Delete ${emp.name}?`)) deleteEmployee(emp.id);
+                            }}
+                            title="Delete employee"
+                          >
+                            🗑️
+                          </button>
+                        </td>
+                      ) : null}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {isManager ? (
+            <div style={styles.addBarWrap}>
+              <div style={styles.addBarInner}>
+                <AddEmployeeBar onAdd={addEmployee} styles={styles} />
+              </div>
             </div>
-          ))}
-          <div className="weekTotal">
+          ) : null}
+        </div>
+
+        {/* Weekly totals */}
+        <div style={styles.totalsCard}>
+          <div style={styles.totalsHeader}>Weekly Totals</div>
+          {schedule.employees.map((e) => {
+            const t = weeklyTotals.find((x) => x.id === e.id)?.total ?? 0;
+            return (
+              <div key={e.id} style={styles.totalsItem}>
+                <div style={{ fontWeight: 900 }}>{e.name}</div>
+                <div style={{ fontWeight: 950 }}>{t}</div>
+              </div>
+            );
+          })}
+          <div style={styles.weekTotal}>
             <div>Week Total</div>
-            <div className="weekTotalNum">{weeklyTotals.weekTotal}</div>
+            <div>{weekTotal}</div>
           </div>
         </div>
 
-        {/* CUSTOM SHIFT MODAL */}
-        {customOpen && (
-          <div className="modalOverlay" onClick={() => setCustomOpen(false)}>
-            <div className="modal" onClick={(e) => e.stopPropagation()}>
-              <div className="modalTitle">Custom Shift</div>
-              <div className="modalSub">Choose start & end (30 min steps, 8AM–8PM)</div>
-
-              <div className="modalGrid">
-                <div>
-                  <div className="fieldLabel">Start</div>
-                  <select
-                    className="modalSelect"
-                    value={customStart}
-                    onChange={(e) => setCustomStart(parseInt(e.target.value, 10))}
-                  >
-                    {timeOptions(8 * 60, 19 * 60).map((m) => (
-                      <option key={m} value={m}>
-                        {minutesToLabel(m)}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <div className="fieldLabel">End</div>
-                  <select
-                    className="modalSelect"
-                    value={customEnd}
-                    onChange={(e) => setCustomEnd(parseInt(e.target.value, 10))}
-                  >
-                    {timeOptions(8 * 60 + 30, 20 * 60).map((m) => (
-                      <option key={m} value={m}>
-                        {minutesToLabel(m)}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              <div className="modalActions">
-                <button className="pill ghost" onClick={() => setCustomOpen(false)}>
-                  Cancel
-                </button>
-                <button className="pill primary" onClick={applyCustom}>
-                  Apply
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
+        {/* ✅ REMOVED: Manager link / Viewer link / Tip block */}
       </div>
 
-      <Toaster />
-      <style>{CSS}</style>
+      {toast ? <div style={styles.toast}>{toast}</div> : null}
+
+      {customModal ? (
+        <CustomShiftModal
+          styles={styles}
+          onClose={() => setCustomModal(null)}
+          onApply={(startMin, endMin) => {
+            applyCustomShift(customModal.empId, customModal.dayIndex, startMin, endMin);
+            setCustomModal(null);
+            showToast("Custom shift applied ✅");
+          }}
+        />
+      ) : null}
     </div>
   );
 }
 
-/** 30-minute options generator */
-function timeOptions(minM, maxM) {
-  const out = [];
-  for (let m = minM; m <= maxM; m += 30) out.push(m);
-  return out;
+function AddEmployeeBar({ onAdd, styles }) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+
+  if (!open) {
+    return (
+      <button style={styles.addBar} onClick={() => setOpen(true)} type="button">
+        <span style={{ fontSize: 18 }}>➕</span>
+        <span style={{ fontWeight: 950 }}>Add employee</span>
+      </button>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+      <input
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        placeholder="New employee name"
+        style={{
+          flex: "1 1 220px",
+          padding: "12px 14px",
+          borderRadius: 16,
+          border: "1px solid rgba(0,0,0,.10)",
+          fontWeight: 900,
+          outline: "none",
+        }}
+      />
+      <button
+        style={{ ...styles.btn, ...styles.btnPrimary }}
+        onClick={() => {
+          onAdd(name);
+          setName("");
+          setOpen(false);
+        }}
+        type="button"
+      >
+        Add
+      </button>
+      <button
+        style={styles.btn}
+        onClick={() => {
+          setName("");
+          setOpen(false);
+        }}
+        type="button"
+      >
+        Cancel
+      </button>
+    </div>
+  );
 }
 
-/** Clipboard + toast */
-function copyToClipboard(text) {
-  if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(text);
-  const ta = document.createElement("textarea");
-  ta.value = text;
-  document.body.appendChild(ta);
-  ta.select();
-  document.execCommand("copy");
-  document.body.removeChild(ta);
-  return Promise.resolve();
-}
-
-let _toast = null;
-function toast(msg) {
-  if (_toast) _toast(msg);
-}
-
-function Toaster() {
-  const [msg, setMsg] = useState(null);
-  useEffect(() => {
-    _toast = (m) => {
-      setMsg(m);
-      setTimeout(() => setMsg(null), 2200);
-    };
-    return () => (_toast = null);
+function CustomShiftModal({ styles, onClose, onApply }) {
+  const options = useMemo(() => {
+    const arr = [];
+    for (let m = 480; m <= 1200; m += 30) arr.push(m);
+    return arr;
   }, []);
-  if (!msg) return null;
-  return <div className="toast">{msg}</div>;
+
+  const [startMin, setStartMin] = useState(480);
+  const [endMin, setEndMin] = useState(1020);
+
+  useEffect(() => {
+    if (endMin <= startMin) setEndMin(Math.min(1200, startMin + 30));
+  }, [startMin]);
+
+  return (
+    <div style={styles.modalOverlay} onMouseDown={onClose}>
+      <div style={styles.modal} onMouseDown={(e) => e.stopPropagation()}>
+        <div style={styles.modalHeader}>Custom Shift (30-min)</div>
+        <div style={styles.modalBody}>
+          <div style={{ fontWeight: 900, marginBottom: 10, opacity: 0.85 }}>
+            Choose a start and end time (between 8AM and 8PM).
+          </div>
+
+          <div style={styles.modalRow}>
+            <select style={styles.modalSelect} value={startMin} onChange={(e) => setStartMin(Number(e.target.value))}>
+              {options.map((m) => <option key={m} value={m}>{minutesToLabel(m)}</option>)}
+            </select>
+
+            <select style={styles.modalSelect} value={endMin} onChange={(e) => setEndMin(Number(e.target.value))}>
+              {options.filter((m) => m > startMin).map((m) => <option key={m} value={m}>{minutesToLabel(m)}</option>)}
+            </select>
+          </div>
+
+          <div style={{ marginTop: 12, fontWeight: 950, fontSize: 16 }}>
+            Preview: <span style={{ color: "#1c4ed8" }}>{shiftLabelFromMinutes(startMin, endMin)}</span>
+          </div>
+        </div>
+
+        <div style={styles.modalActions}>
+          <button style={styles.btn} onClick={onClose} type="button">Cancel</button>
+          <button style={{ ...styles.btn, ...styles.btnPrimary }} onClick={() => onApply(startMin, endMin)} type="button">
+            Apply
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
-/** ---------- Styling (UTA-ish cards / gradients / mobile-safe header) ---------- */
-const CSS = `
-  :root{
-    --bg:#eaf2fb;
-    --card:#ffffff;
-    --ink:#0f172a;
-    --muted:#64748b;
-    --stroke:rgba(15,23,42,.08);
-    --shadow:0 16px 40px rgba(15,23,42,.10);
-    --grad:linear-gradient(135deg,#5b8cff,#2dd4bf);
-    --grad2:linear-gradient(135deg,#4f46e5,#06b6d4);
-    --pill:999px;
-  }
-
-  *{box-sizing:border-box}
-  body{
-    margin:0;
-    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial;
-    background: radial-gradient(1200px 800px at 50% -200px, rgba(91,140,255,.25), transparent 60%),
-                radial-gradient(900px 600px at 90% 0px, rgba(45,212,191,.22), transparent 55%),
-                var(--bg);
-    color:var(--ink);
-  }
-
-  .page{min-height:100vh; padding:14px;}
-  .shell{max-width:1100px; margin:0 auto; }
-
-  /* Top card */
-  .topCard{
-    background:rgba(255,255,255,.72);
-    border:1px solid var(--stroke);
-    backdrop-filter: blur(10px);
-    border-radius:22px;
-    padding:14px;
-    box-shadow: var(--shadow);
-  }
-  .topRow{
-    display:flex;
-    gap:12px;
-    align-items:center;
-  }
-  .avatar{
-    width:64px; height:64px; border-radius:22px;
-    background: var(--grad);
-    display:flex; align-items:center; justify-content:center;
-    color:white; font-weight:800; font-size:22px;
-    flex: 0 0 auto;
-  }
-  .topInfo{min-width:0; flex:1;}
-  .topLabel{
-    letter-spacing:.18em;
-    font-size:12px;
-    color:rgba(15,23,42,.55);
-    font-weight:800;
-  }
-  .storeTitle{
-    font-size:30px;
-    font-weight:900;
-    line-height:1.05;
-    white-space:nowrap;
-    overflow:hidden;
-    text-overflow:ellipsis;
-  }
-  .storeInput{
-    width:100%;
-    font-size:28px;
-    font-weight:900;
-    border:none;
-    outline:none;
-    background:transparent;
-    padding:0;
-    white-space:nowrap;
-    overflow:hidden;
-    text-overflow:ellipsis;
-  }
-  .weekLine{
-    margin-top:6px;
-    color:var(--muted);
-    font-weight:700;
-  }
-
-  /* Buttons: always visible, wraps on mobile */
-  .btnBar{
-    margin-top:12px;
-    display:flex;
-    gap:10px;
-    flex-wrap:wrap;
-    justify-content:flex-start;
-  }
-  .pill{
-    border-radius: var(--pill);
-    padding:10px 14px;
-    font-weight:800;
-    border:1px solid var(--stroke);
-    background:#fff;
-    color:#2563eb;
-    box-shadow: 0 10px 22px rgba(15,23,42,.06);
-  }
-  .pill.primary{
-    background: var(--grad);
-    color:white;
-    border:none;
-  }
-  .pill.ghost{
-    background: rgba(255,255,255,.80);
-  }
-  .pill:active{transform: translateY(1px);}
-
-  /* Tabs card */
-  .tabsCard{
-    margin-top:12px;
-    border-radius:22px;
-    padding:12px;
-    background: rgba(255,255,255,.72);
-    border:1px solid var(--stroke);
-    backdrop-filter: blur(10px);
-    box-shadow: var(--shadow);
-  }
-  .tabsStrip{
-    display:flex;
-    gap:10px;
-    overflow:auto;
-    padding-bottom:2px;
-  }
-  .tab{
-    min-width:140px;
-    border-radius:20px;
-    padding:14px 14px;
-    background: rgba(79,70,229,.12);
-    border:1px solid rgba(79,70,229,.18);
-    color: rgba(15,23,42,.75);
-    flex:0 0 auto;
-  }
-  .tab.active{
-    background: var(--grad2);
-    color:white;
-    border:none;
-  }
-  .tabTop{font-weight:900; font-size:22px; line-height:1.0;}
-  .tabBottom{font-weight:800; opacity:.9; margin-top:4px;}
-
-  /* Cards */
-  .card{
-    margin-top:14px;
-    background: rgba(255,255,255,.74);
-    border:1px solid var(--stroke);
-    backdrop-filter: blur(10px);
-    border-radius:22px;
-    box-shadow: var(--shadow);
-    overflow:hidden;
-  }
-  .cardHeader{
-    background: var(--grad2);
-    padding:14px 16px;
-    color:white;
-  }
-  .cardTitle{
-    font-size:28px;
-    font-weight:900;
-  }
-
-  .tableWrap{ padding: 10px 10px 12px; overflow:auto; }
-  .tableHead, .tableRow{
-    display:grid;
-    grid-template-columns: 240px repeat(7, minmax(120px, 1fr)) 80px 60px;
-    gap:10px;
-    align-items:center;
-  }
-  .tableHead{
-    padding:10px 8px;
-    color:rgba(15,23,42,.65);
-    font-weight:900;
-  }
-  .th{ font-size:16px; }
-  .muted{ color:rgba(15,23,42,.40); font-weight:900; }
-  .tableRow{
-    padding:10px 8px;
-    border-top:1px solid rgba(15,23,42,.06);
-  }
-
-  .nameInput{
-    width:100%;
-    padding:12px 14px;
-    border-radius:18px;
-    border:1px solid rgba(15,23,42,.10);
-    font-size:20px;
-    font-weight:900;
-    background: rgba(255,255,255,.85);
-    outline:none;
-  }
-
-  .shiftSelect{
-    width:100%;
-    padding:10px 12px;
-    border-radius: 999px;
-    border:1px solid rgba(15,23,42,.10);
-    font-weight:900;
-    color:#2563eb;
-    background: rgba(255,255,255,.90);
-  }
-
-  .chip{
-    display:inline-flex;
-    align-items:center;
-    justify-content:center;
-    width:100%;
-    padding:10px 12px;
-    border-radius:999px;
-    border:1px solid rgba(15,23,42,.10);
-    font-weight:900;
-    color:#2563eb;
-    background: rgba(255,255,255,.90);
-  }
-  .chipOff{ color: rgba(15,23,42,.55); }
-
-  .totalTd{
-    font-weight:900;
-    text-align:center;
-    font-size:18px;
-  }
-
-  .trashBtn{
-    border:none;
-    background: rgba(255,255,255,.85);
-    border:1px solid rgba(15,23,42,.08);
-    border-radius: 14px;
-    padding:10px 10px;
-    box-shadow: 0 10px 22px rgba(15,23,42,.06);
-  }
-
-  .addRow{
-    margin-top:10px;
-    border-top:1px solid rgba(15,23,42,.06);
-    padding:14px 10px;
-  }
-  .addInner{
-    display:flex;
-    align-items:center;
-    justify-content:flex-start;
-    gap:10px;
-    background: rgba(241,245,249,.9);
-    border:1px dashed rgba(15,23,42,.18);
-    border-radius:18px;
-    padding:14px 16px;
-    width:100%;
-  }
-  .plus{
-    width:34px; height:34px;
-    border-radius:12px;
-    background: var(--grad);
-    color:white;
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    font-weight:900;
-    flex:0 0 auto;
-  }
-  .addText{
-    font-weight:900;
-    font-size:18px;
-    white-space:nowrap;
-  }
-
-  /* Totals card */
-  .totalsCard{ padding: 14px; }
-  .totalsHeader{
-    font-size:22px;
-    font-weight:900;
-    margin-bottom:8px;
-  }
-  .totalsRow{
-    display:flex;
-    align-items:center;
-    justify-content:space-between;
-    padding:12px 12px;
-    border-radius:18px;
-    background: rgba(255,255,255,.80);
-    border:1px solid rgba(15,23,42,.06);
-    margin-bottom:10px;
-  }
-  .totalsName{ font-weight:900; font-size:18px; }
-  .totalsHours{ font-weight:900; font-size:20px; }
-
-  .weekTotal{
-    display:flex;
-    justify-content:space-between;
-    align-items:center;
-    background: rgba(79,70,229,.10);
-    border:1px solid rgba(79,70,229,.15);
-    border-radius:18px;
-    padding:14px 14px;
-    font-weight:900;
-    margin-top:6px;
-  }
-  .weekTotalNum{ font-size:22px; }
-
-  /* Modal */
-  .modalOverlay{
-    position:fixed;
-    inset:0;
-    background: rgba(15,23,42,.35);
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    padding:16px;
-    z-index:9999;
-  }
-  .modal{
-    width:min(520px, 96vw);
-    background: rgba(255,255,255,.92);
-    border:1px solid rgba(15,23,42,.08);
-    border-radius:22px;
-    box-shadow: var(--shadow);
-    padding:16px;
-    backdrop-filter: blur(10px);
-  }
-  .modalTitle{ font-size:22px; font-weight:900; }
-  .modalSub{ color:var(--muted); font-weight:700; margin-top:4px; }
-  .modalGrid{
-    display:grid;
-    grid-template-columns: 1fr 1fr;
-    gap:12px;
-    margin-top:14px;
-  }
-  .fieldLabel{ font-weight:900; color:rgba(15,23,42,.70); margin-bottom:6px; }
-  .modalSelect{
-    width:100%;
-    padding:12px 12px;
-    border-radius:16px;
-    border:1px solid rgba(15,23,42,.10);
-    font-weight:900;
-    background:#fff;
-  }
-  .modalActions{
-    margin-top:14px;
-    display:flex;
-    justify-content:flex-end;
-    gap:10px;
-    flex-wrap:wrap;
-  }
-
-  /* Toast */
-  .toast{
-    position:fixed;
-    left:50%;
-    bottom:22px;
-    transform:translateX(-50%);
-    background: rgba(15,23,42,.90);
-    color:white;
-    padding:12px 16px;
-    border-radius:999px;
-    font-weight:800;
-    box-shadow: 0 16px 40px rgba(15,23,42,.22);
-    z-index: 99999;
-    max-width: 92vw;
-    text-align:center;
-  }
-
-  /* Mobile tuning */
-  @media (max-width: 720px){
-    .storeTitle{ font-size:26px; }
-    .storeInput{ font-size:24px; }
-    .tableHead, .tableRow{
-      grid-template-columns: 200px repeat(7, minmax(120px, 1fr)) 70px 52px;
-    }
-    .nameInput{ font-size:18px; }
-  }
-
-  @media (max-width: 420px){
-    .avatar{ width:58px; height:58px; border-radius:20px; }
-    .storeTitle{ font-size:24px; }
-    .storeInput{ font-size:22px; }
-  }
-`;
-
-// Mount
+/** ✅ React 17 compatible mount */
 ReactDOM.render(<App />, document.getElementById("root"));
