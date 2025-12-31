@@ -3,8 +3,8 @@
 const { useEffect, useMemo, useRef, useState } = React;
 
 /** =========================
- *  Helpers: date + time
- *  ========================= */
+ * Helpers
+ * ========================= */
 
 function pad2(n) {
   return String(n).padStart(2, "0");
@@ -50,6 +50,10 @@ function formatDayChip(date) {
   return { dow, mon, day };
 }
 
+function clamp(n, a, b) {
+  return Math.max(a, Math.min(b, n));
+}
+
 function minutesToLabel(mins) {
   let h = Math.floor(mins / 60);
   const m = mins % 60;
@@ -63,13 +67,9 @@ function shiftLabelFromMinutes(startMin, endMin) {
   return `${minutesToLabel(startMin)}–${minutesToLabel(endMin)}`;
 }
 
-function clamp(n, a, b) {
-  return Math.max(a, Math.min(b, n));
-}
-
 /** =========================
- *  Shift options
- *  ========================= */
+ * Shift options
+ * ========================= */
 
 const COMMON_SHIFTS = [
   "Off",
@@ -95,8 +95,8 @@ function isCustomShiftValue(value) {
 }
 
 /** =========================
- *  Storage (local for now)
- *  ========================= */
+ * Storage (local only for now)
+ * ========================= */
 
 function storageKey(storeId, weekISO) {
   return `tephseal:schedule:${storeId}:${weekISO}`;
@@ -127,8 +127,7 @@ function defaultSchedule(storeId, weekMondayISO) {
 }
 
 function loadScheduleLocal(storeId, weekMondayISO) {
-  const key = storageKey(storeId, weekMondayISO);
-  const raw = localStorage.getItem(key);
+  const raw = localStorage.getItem(storageKey(storeId, weekMondayISO));
   if (!raw) return null;
   try {
     return JSON.parse(raw);
@@ -138,8 +137,7 @@ function loadScheduleLocal(storeId, weekMondayISO) {
 }
 
 function saveScheduleLocal(storeId, weekMondayISO, scheduleObj) {
-  const key = storageKey(storeId, weekMondayISO);
-  localStorage.setItem(key, JSON.stringify(scheduleObj));
+  localStorage.setItem(storageKey(storeId, weekMondayISO), JSON.stringify(scheduleObj));
 }
 
 function copyScheduleToNewWeek(scheduleObj, storeId, newWeekISO) {
@@ -154,8 +152,25 @@ function copyScheduleToNewWeek(scheduleObj, storeId, newWeekISO) {
 }
 
 /** =========================
- *  Hours
- *  ========================= */
+ * Hours (for totals)
+ * ========================= */
+
+function parseTimeLabel(s) {
+  const t = s.toUpperCase().replace(/\s+/g, "");
+  const am = t.endsWith("AM");
+  const pm = t.endsWith("PM");
+  if (!am && !pm) return null;
+
+  const core = t.slice(0, -2);
+  const [hhStr, mmStr] = core.split(":");
+  let hh = Number(hhStr);
+  let mm = mmStr ? Number(mmStr) : 0;
+  if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null;
+
+  if (hh === 12) hh = 0;
+  const h24 = hh + (pm ? 12 : 0);
+  return h24 * 60 + clamp(mm, 0, 59);
+}
 
 function shiftToMinutesRange(shiftLabel) {
   if (!shiftLabel || normalizeShiftLabel(shiftLabel) === normalizeShiftLabel("Off")) return null;
@@ -168,35 +183,18 @@ function shiftToMinutesRange(shiftLabel) {
   return { startMin: a, endMin: b };
 }
 
-function parseTimeLabel(s) {
-  const t = s.toUpperCase().replace(/\s+/g, "");
-  const am = t.endsWith("AM");
-  const pm = t.endsWith("PM");
-  if (!am && !pm) return null;
-  const core = t.slice(0, -2);
-  const [hhStr, mmStr] = core.split(":");
-  let hh = Number(hhStr);
-  let mm = mmStr ? Number(mmStr) : 0;
-  if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null;
-  if (hh === 12) hh = 0;
-  let h24 = hh + (pm ? 12 : 0);
-  const mins = h24 * 60 + clamp(mm, 0, 59);
-  return mins;
-}
-
 function shiftHours(shiftLabel) {
   const r = shiftToMinutesRange(shiftLabel);
   if (!r) return 0;
   let { startMin, endMin } = r;
   startMin = clamp(startMin, 480, 1200); // 8AM
   endMin = clamp(endMin, 480, 1200);     // 8PM
-  const diff = Math.max(0, endMin - startMin);
-  return diff / 60;
+  return Math.max(0, endMin - startMin) / 60;
 }
 
 /** =========================
- *  App
- *  ========================= */
+ * App
+ * ========================= */
 
 function App() {
   const url = useMemo(() => new URL(window.location.href), []);
@@ -204,12 +202,8 @@ function App() {
   const isManager = url.searchParams.get("manager") === "1";
   const weekParam = url.searchParams.get("week");
 
-  // ✅ Viewer should ONLY see the week sent (week param). If not provided, show current week.
   const initialMonday = useMemo(() => {
-    const base = weekParam
-      ? startOfWeekMonday(parseISODate(weekParam))
-      : startOfWeekMonday(new Date());
-    return base;
+    return weekParam ? startOfWeekMonday(parseISODate(weekParam)) : startOfWeekMonday(new Date());
   }, [weekParam]);
 
   const [monday, setMonday] = useState(initialMonday);
@@ -224,16 +218,17 @@ function App() {
   const toastTimer = useRef(null);
 
   const [customModal, setCustomModal] = useState(null); // { empId, dayIndex }
+  const [activeTab, setActiveTab] = useState("all"); // kept for UI chips
 
   useEffect(() => {
     const existing = loadScheduleLocal(storeId, weekISO);
     if (existing) {
       setSchedule(existing);
     } else {
+      // only managers auto-copy from previous week
       const prevISO = toISODate(addWeeks(monday, -1));
       const prev = loadScheduleLocal(storeId, prevISO);
       if (prev && isManager) {
-        // only managers auto-copy forward
         const copied = copyScheduleToNewWeek(prev, storeId, weekISO);
         setSchedule(copied);
         saveScheduleLocal(storeId, weekISO, copied);
@@ -246,11 +241,7 @@ function App() {
   useEffect(() => {
     setSchedule((prev) => ({
       ...prev,
-      meta: {
-        ...(prev.meta || {}),
-        storeId,
-        weekMondayISO: weekISO,
-      },
+      meta: { ...(prev.meta || {}), storeId, weekMondayISO: weekISO },
     }));
   }, [storeId, weekISO]);
 
@@ -269,17 +260,13 @@ function App() {
   }
 
   function saveNow() {
-    const next = {
-      ...schedule,
-      meta: { ...(schedule.meta || {}), updatedAt: Date.now() },
-    };
+    const next = { ...schedule, meta: { ...(schedule.meta || {}), updatedAt: Date.now() } };
     setSchedule(next);
     saveScheduleLocal(storeId, weekISO, next);
     showToast("Saved ✅");
   }
 
   async function shareReadOnlyLink() {
-    // ✅ Employees get a fixed week link
     const link = `${window.location.origin}${window.location.pathname}?store=${encodeURIComponent(storeId)}&week=${encodeURIComponent(weekISO)}`;
     try {
       await navigator.clipboard.writeText(link);
@@ -343,11 +330,7 @@ function App() {
     }));
   }
 
-  const days = useMemo(() => {
-    const arr = [];
-    for (let i = 0; i < 7; i++) arr.push(addDays(monday, i));
-    return arr;
-  }, [monday]);
+  const days = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(monday, i)), [monday]);
 
   const weeklyTotals = useMemo(() => {
     return schedule.employees.map((e) => {
@@ -359,8 +342,10 @@ function App() {
   const weekTotal = useMemo(() => weeklyTotals.reduce((s, x) => s + x.total, 0), [weeklyTotals]);
 
   const storeName = schedule.meta?.storeName || "Murdock Hyundai";
-  const managerLink = `${window.location.origin}${window.location.pathname}?store=${encodeURIComponent(storeId)}&manager=1`;
+
+  // share link always pins a week (employees can’t flip weeks)
   const viewerLink = `${window.location.origin}${window.location.pathname}?store=${encodeURIComponent(storeId)}&week=${encodeURIComponent(weekISO)}`;
+  const managerLink = `${window.location.origin}${window.location.pathname}?store=${encodeURIComponent(storeId)}&manager=1`;
 
   /** Styles */
   const styles = useMemo(() => ({
@@ -372,6 +357,7 @@ function App() {
       color: "#0b1220",
     },
     shell: { maxWidth: 980, margin: "0 auto" },
+
     topCard: {
       background: "rgba(255,255,255,.88)",
       border: "1px solid rgba(16,24,40,.08)",
@@ -422,10 +408,9 @@ function App() {
       lineHeight: 1.15,
       maxWidth: 420,
       whiteSpace: "normal",
-      overflow: "visible",
-      textOverflow: "clip",
     },
     subTitle: { fontSize: 13, opacity: 0.7, fontWeight: 700, marginTop: 2 },
+
     controls: {
       display: "flex",
       gap: 8,
@@ -644,6 +629,17 @@ function App() {
       borderTop: "1px solid rgba(0,0,0,.08)",
       background: "rgba(79,124,255,.06)",
     },
+
+    storeInput: {
+      width: "min(420px, 100%)",
+      maxWidth: 420,
+      fontSize: 20,
+      fontWeight: 950,
+      border: "1px solid rgba(0,0,0,.10)",
+      borderRadius: 16,
+      padding: "10px 12px",
+      outline: "none",
+    },
   }), []);
 
   return (
@@ -668,28 +664,17 @@ function App() {
                       }));
                     }}
                     placeholder="Store name"
-                    style={{
-                      width: "min(420px, 100%)",
-                      maxWidth: 420,
-                      fontSize: 20,
-                      fontWeight: 950,
-                      border: "1px solid rgba(0,0,0,.10)",
-                      borderRadius: 16,
-                      padding: "10px 12px",
-                      outline: "none",
-                    }}
+                    style={styles.storeInput}
                   />
                 ) : (
-                  <div style={styles.storeTitle} title={storeName}>
-                    {storeName}
-                  </div>
+                  <div style={styles.storeTitle}>{storeName}</div>
                 )}
 
                 <div style={styles.subTitle}>{formatWeekLabel(monday)}</div>
               </div>
             </div>
 
-            {/* ✅ employees: NO prev/next buttons */}
+            {/* ✅ Employees do NOT get Prev/Next */}
             <div style={styles.controls}>
               {isManager ? (
                 <>
@@ -717,7 +702,7 @@ function App() {
           </div>
         </div>
 
-        {/* Tabs */}
+        {/* Tabs (kept; pinned week anyway) */}
         <div style={styles.tabsWrap}>
           <div style={styles.tabsRow}>
             <button style={styles.chip(activeTab === "all")} onClick={() => setActiveTab("all")}>
@@ -865,6 +850,9 @@ function App() {
         <div style={{ marginTop: 16, fontSize: 13, opacity: 0.75 }}>
           <div><b>Manager link:</b> {managerLink}</div>
           <div><b>Viewer link:</b> {viewerLink}</div>
+          <div style={{ marginTop: 6, opacity: 0.85 }}>
+            Tip: change stores with <code>?store=store-2</code>, <code>?store=hyundai-south</code>, etc.
+          </div>
         </div>
       </div>
 
@@ -987,4 +975,5 @@ function CustomShiftModal({ styles, onClose, onApply }) {
   );
 }
 
-ReactDOM.render(<App/>,document.getElementById("root"));
+/** ✅ React 17 compatible mount */
+ReactDOM.render(<App />, document.getElementById("root"));
