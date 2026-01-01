@@ -68,6 +68,43 @@ function shiftLabelFromMinutes(startMin, endMin) {
 }
 
 /** =========================
+ * Share snapshot encode/decode
+ * ========================= */
+
+function safeB64Encode(str) {
+  // UTF-8 safe
+  const utf8 = encodeURIComponent(str).replace(/%([0-9A-F]{2})/g, (_, p1) =>
+    String.fromCharCode(parseInt(p1, 16))
+  );
+  return btoa(utf8).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function safeB64Decode(b64url) {
+  const b64 = (b64url || "").replace(/-/g, "+").replace(/_/g, "/");
+  const padLen = (4 - (b64.length % 4)) % 4;
+  const padded = b64 + "=".repeat(padLen);
+  const bin = atob(padded);
+  const percent = Array.prototype.map
+    .call(bin, (c) => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2))
+    .join("");
+  return decodeURIComponent(percent);
+}
+
+function buildSnapshot(schedule, storeId, weekISO) {
+  // Minimal payload, keeps link shorter
+  return {
+    v: 1,
+    storeId,
+    weekISO,
+    storeName: schedule?.meta?.storeName || "Schedule",
+    employees: (schedule?.employees || []).map((e) => ({
+      name: e.name || "",
+      shifts: Array.isArray(e.shifts) ? e.shifts.slice(0, 7) : ["Off","Off","Off","Off","Off","Off","Off"],
+    })),
+  };
+}
+
+/** =========================
  * Shift options
  * ========================= */
 
@@ -95,7 +132,7 @@ function isCustomShiftValue(value) {
 }
 
 /** =========================
- * Storage (local only for now)
+ * Storage (manager device)
  * ========================= */
 
 function storageKey(storeId, weekISO) {
@@ -199,25 +236,50 @@ function shiftHours(shiftLabel) {
 function App() {
   const url = useMemo(() => new URL(window.location.href), []);
   const storeId = (url.searchParams.get("store") || "murdock-murray").trim();
-  const isManager = url.searchParams.get("manager") === "1";
   const weekParam = url.searchParams.get("week");
+  const dataParam = url.searchParams.get("data"); // snapshot for employees
 
-  // ✅ responsive flag to fix mobile header layout
-  const [isNarrow, setIsNarrow] = useState(() => window.innerWidth <= 520);
-  useEffect(() => {
-    const onResize = () => setIsNarrow(window.innerWidth <= 520);
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, []);
+  // If data= exists, FORCE viewer mode (read-only), even if someone adds manager=1
+  const isSnapshotView = Boolean(dataParam);
+  const isManager = !isSnapshotView && url.searchParams.get("manager") === "1";
 
+  // If a week is provided, show that week; otherwise current week.
   const initialMonday = useMemo(() => {
-    return weekParam ? startOfWeekMonday(parseISODate(weekParam)) : startOfWeekMonday(new Date());
+    const base = weekParam
+      ? startOfWeekMonday(parseISODate(weekParam))
+      : startOfWeekMonday(new Date());
+    return base;
   }, [weekParam]);
 
   const [monday, setMonday] = useState(initialMonday);
   const weekISO = useMemo(() => toISODate(monday), [monday]);
 
   const [schedule, setSchedule] = useState(() => {
+    // If viewing a snapshot, decode it and use it (read-only)
+    if (dataParam) {
+      try {
+        const decoded = safeB64Decode(dataParam);
+        const snap = JSON.parse(decoded);
+        return {
+          meta: {
+            storeId: snap.storeId || storeId,
+            storeName: snap.storeName || "Schedule",
+            weekMondayISO: snap.weekISO || weekISO,
+            updatedAt: Date.now(),
+          },
+          employees: (snap.employees || []).map((e) => ({
+            id: cryptoId(),
+            name: e.name || "",
+            shifts: Array.isArray(e.shifts) ? e.shifts.slice(0, 7) : makeOffWeek(),
+          })),
+        };
+      } catch {
+        // If decoding fails, fall back to empty week (still viewer)
+        return defaultSchedule(storeId, weekISO);
+      }
+    }
+
+    // Manager/device-local schedule
     const existing = loadScheduleLocal(storeId, weekISO);
     return existing || defaultSchedule(storeId, weekISO);
   });
@@ -226,14 +288,16 @@ function App() {
   const toastTimer = useRef(null);
 
   const [customModal, setCustomModal] = useState(null); // { empId, dayIndex }
-  const [activeTab, setActiveTab] = useState("all"); // kept for UI chips
+  const [activeTab, setActiveTab] = useState("all");
 
   useEffect(() => {
+    if (isSnapshotView) return; // snapshot view shouldn't load/overwrite local storage
+
     const existing = loadScheduleLocal(storeId, weekISO);
     if (existing) {
       setSchedule(existing);
     } else {
-      // only managers auto-copy from previous week
+      // only managers auto-copy forward
       const prevISO = toISODate(addWeeks(monday, -1));
       const prev = loadScheduleLocal(storeId, prevISO);
       if (prev && isManager) {
@@ -244,7 +308,7 @@ function App() {
         setSchedule(defaultSchedule(storeId, weekISO));
       }
     }
-  }, [storeId, weekISO]);
+  }, [storeId, weekISO, isManager, isSnapshotView]);
 
   useEffect(() => {
     setSchedule((prev) => ({
@@ -268,6 +332,7 @@ function App() {
   }
 
   function saveNow() {
+    if (!isManager) return;
     const next = { ...schedule, meta: { ...(schedule.meta || {}), updatedAt: Date.now() } };
     setSchedule(next);
     saveScheduleLocal(storeId, weekISO, next);
@@ -275,16 +340,27 @@ function App() {
   }
 
   async function shareReadOnlyLink() {
-    const link = `${window.location.origin}${window.location.pathname}?store=${encodeURIComponent(storeId)}&week=${encodeURIComponent(weekISO)}`;
+    // Build a snapshot viewer URL (read-only), pinned to this week,
+    // and embeds the schedule so employees see the same data.
+    const snap = buildSnapshot(schedule, storeId, weekISO);
+    const encoded = safeB64Encode(JSON.stringify(snap));
+
+    const link =
+      `${window.location.origin}${window.location.pathname}` +
+      `?store=${encodeURIComponent(storeId)}` +
+      `&week=${encodeURIComponent(weekISO)}` +
+      `&data=${encodeURIComponent(encoded)}`;
+
     try {
       await navigator.clipboard.writeText(link);
-      showToast("Viewer link copied ✅");
+      showToast("View-only link copied ✅");
     } catch {
-      window.prompt("Copy this viewer link:", link);
+      window.prompt("Copy this view-only link:", link);
     }
   }
 
   function updateEmployeeName(empId, name) {
+    if (!isManager) return;
     setSchedule((prev) => ({
       ...prev,
       employees: prev.employees.map((e) => (e.id === empId ? { ...e, name } : e)),
@@ -292,6 +368,7 @@ function App() {
   }
 
   function deleteEmployee(empId) {
+    if (!isManager) return;
     setSchedule((prev) => ({
       ...prev,
       employees: prev.employees.filter((e) => e.id !== empId),
@@ -300,6 +377,7 @@ function App() {
   }
 
   function addEmployee(name) {
+    if (!isManager) return;
     const nm = (name || "").trim();
     if (!nm) return;
     setSchedule((prev) => ({
@@ -310,10 +388,13 @@ function App() {
   }
 
   function setShift(empId, dayIndex, value) {
+    if (!isManager) return;
+
     if (value === "__CUSTOM__") {
       setCustomModal({ empId, dayIndex });
       return;
     }
+
     setSchedule((prev) => ({
       ...prev,
       employees: prev.employees.map((e) => {
@@ -326,6 +407,7 @@ function App() {
   }
 
   function applyCustomShift(empId, dayIndex, startMin, endMin) {
+    if (!isManager) return;
     const label = shiftLabelFromMinutes(startMin, endMin);
     setSchedule((prev) => ({
       ...prev,
@@ -351,322 +433,312 @@ function App() {
 
   const storeName = schedule.meta?.storeName || "Murdock Hyundai";
 
-  // share link always pins a week (employees can’t flip weeks)
-  const viewerLink = `${window.location.origin}${window.location.pathname}?store=${encodeURIComponent(storeId)}&week=${encodeURIComponent(weekISO)}`;
+  // Links for display/debug
+  const viewerBase = `${window.location.origin}${window.location.pathname}?store=${encodeURIComponent(storeId)}&week=${encodeURIComponent(weekISO)}`;
   const managerLink = `${window.location.origin}${window.location.pathname}?store=${encodeURIComponent(storeId)}&manager=1`;
 
   /** Styles */
-  const styles = useMemo(() => ({
-    page: {
-      minHeight: "100vh",
-      background: "linear-gradient(180deg,#f4fbff 0%, #eef4ff 40%, #f7fbff 100%)",
-      padding: "16px",
-      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
-      color: "#0b1220",
-    },
-    shell: { maxWidth: 980, margin: "0 auto" },
+  const styles = useMemo(() => {
+    const compact = isManager; // make header smaller for manager only
+    return {
+      page: {
+        minHeight: "100vh",
+        background: "linear-gradient(180deg,#f4fbff 0%, #eef4ff 40%, #f7fbff 100%)",
+        padding: compact ? "12px" : "16px",
+        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+        color: "#0b1220",
+      },
+      shell: { maxWidth: 980, margin: "0 auto" },
 
-    topCard: {
-      background: "rgba(255,255,255,.88)",
-      border: "1px solid rgba(16,24,40,.08)",
-      borderRadius: 20,
-      padding: 14,
-      boxShadow: "0 12px 30px rgba(16,24,40,.08)",
-      backdropFilter: "blur(10px)",
-    },
+      topCard: {
+        background: "rgba(255,255,255,.88)",
+        border: "1px solid rgba(16,24,40,.08)",
+        borderRadius: 20,
+        padding: compact ? 10 : 14,
+        boxShadow: "0 12px 30px rgba(16,24,40,.08)",
+        backdropFilter: "blur(10px)",
+      },
+      topRow: {
+        display: "flex",
+        gap: 10,
+        alignItems: "center",
+        justifyContent: "space-between",
+        flexWrap: "wrap",
+      },
+      brandRow: {
+        display: "flex",
+        gap: 10,
+        alignItems: "center",
+        minWidth: 220,
+        flex: "1 1 280px",
+      },
+      logo: {
+        width: compact ? 44 : 52,
+        height: compact ? 44 : 52,
+        borderRadius: 18,
+        background: "linear-gradient(135deg,#4f7cff,#32d2aa)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        color: "white",
+        fontWeight: 900,
+        fontSize: compact ? 18 : 20,
+        flex: "0 0 auto",
+      },
+      titleBlock: { minWidth: 0 },
+      label: {
+        fontSize: compact ? 11 : 12,
+        letterSpacing: 1.3,
+        opacity: 0.6,
+        fontWeight: 800,
+        textTransform: "uppercase",
+        marginBottom: 2,
+      },
+      storeTitle: {
+        fontSize: compact ? 18 : 20,
+        fontWeight: 900,
+        lineHeight: 1.15,
+        maxWidth: 420,
+        whiteSpace: "normal",
+      },
+      storeInput: {
+        width: "min(380px, 100%)",
+        maxWidth: 380,
+        fontSize: compact ? 16 : 20,
+        fontWeight: 950,
+        border: "1px solid rgba(0,0,0,.10)",
+        borderRadius: 16,
+        padding: compact ? "8px 10px" : "10px 12px",
+        outline: "none",
+      },
+      subTitle: { fontSize: compact ? 12 : 13, opacity: 0.7, fontWeight: 700, marginTop: 2 },
 
-    // ✅ changed: column layout on narrow screens
-    topRow: {
-      display: "flex",
-      gap: 12,
-      alignItems: isNarrow ? "stretch" : "center",
-      justifyContent: "space-between",
-      flexWrap: "wrap",
-      flexDirection: isNarrow ? "column" : "row",
-    },
+      controls: {
+        display: "flex",
+        gap: 8,
+        flexWrap: "wrap",
+        justifyContent: "flex-end",
+        alignItems: "center",
+        flex: "1 1 280px",
+      },
+      btn: {
+        border: "1px solid rgba(0,0,0,.10)",
+        background: "rgba(255,255,255,.92)",
+        padding: compact ? "8px 10px" : "10px 12px",
+        borderRadius: 999,
+        fontWeight: 800,
+        color: "#1c4ed8",
+        boxShadow: "0 8px 18px rgba(16,24,40,.06)",
+        cursor: "pointer",
+        display: "inline-flex",
+        gap: 6,
+        alignItems: "center",
+        fontSize: compact ? 13 : 14,
+      },
+      btnPrimary: {
+        background: "linear-gradient(135deg,#4f7cff,#32d2aa)",
+        color: "white",
+        border: "none",
+      },
 
-    brandRow: {
-      display: "flex",
-      gap: 12,
-      alignItems: "center",
-      minWidth: 220,
-      flex: "1 1 280px",
-    },
-    logo: {
-      width: 52,
-      height: 52,
-      borderRadius: 18,
-      background: "linear-gradient(135deg,#4f7cff,#32d2aa)",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      color: "white",
-      fontWeight: 900,
-      fontSize: 20,
-      flex: "0 0 auto",
-    },
-    titleBlock: { minWidth: 0, flex: 1 },
+      tabsWrap: {
+        marginTop: compact ? 10 : 12,
+        background: "linear-gradient(135deg,#4f7cff,#6a5cff)",
+        borderRadius: 18,
+        padding: compact ? 6 : 8,
+        overflowX: "auto",
+      },
+      tabsRow: { display: "flex", gap: 8, minWidth: 520 },
+      chip: (active) => ({
+        border: "none",
+        borderRadius: 16,
+        padding: compact ? "8px 10px" : "10px 12px",
+        fontWeight: 900,
+        background: active ? "rgba(255,255,255,.95)" : "rgba(255,255,255,.18)",
+        color: active ? "#0b1220" : "rgba(255,255,255,.92)",
+        minWidth: 86,
+        cursor: "pointer",
+        textAlign: "left",
+      }),
+      chipTop: { fontSize: compact ? 13 : 14, fontWeight: 900 },
+      chipSub: { fontSize: compact ? 11 : 12, opacity: 0.85, fontWeight: 800 },
 
-    // ✅ changed: make label not crowd on mobile
-    label: {
-      fontSize: 12,
-      letterSpacing: 1.3,
-      opacity: 0.6,
-      fontWeight: 800,
-      textTransform: "uppercase",
-      marginBottom: 4,
-    },
+      sectionCard: {
+        marginTop: compact ? 10 : 14,
+        background: "rgba(255,255,255,.92)",
+        border: "1px solid rgba(16,24,40,.08)",
+        borderRadius: 22,
+        overflow: "hidden",
+        boxShadow: "0 18px 40px rgba(16,24,40,.08)",
+      },
+      sectionHeader: {
+        padding: compact ? "12px 14px" : "14px 16px",
+        color: "white",
+        fontWeight: 950,
+        fontSize: compact ? 18 : 20,
+        background: "linear-gradient(135deg,#4f7cff,#32d2aa)",
+      },
 
-    // ✅ changed: allow store title to wrap nicely
-    storeTitle: {
-      fontSize: 20,
-      fontWeight: 900,
-      lineHeight: 1.15,
-      maxWidth: "100%",
-      whiteSpace: "normal",
-      wordBreak: "break-word",
-    },
+      tableWrap: { padding: compact ? 10 : 12, overflowX: "auto" },
+      table: { width: "100%", borderCollapse: "separate", borderSpacing: "0 10px", minWidth: 640 },
+      th: { textAlign: "left", fontSize: 13, opacity: 0.7, fontWeight: 900, padding: "0 10px 6px 10px" },
+      trRow: { background: "rgba(250,252,255,.9)", border: "1px solid rgba(0,0,0,.06)" },
+      td: { padding: compact ? 8 : 10, verticalAlign: "middle" },
 
-    subTitle: { fontSize: 13, opacity: 0.7, fontWeight: 700, marginTop: 4 },
+      nameInput: {
+        width: 180,
+        maxWidth: "180px",
+        padding: compact ? "10px 12px" : "12px 14px",
+        borderRadius: 18,
+        border: "1px solid rgba(0,0,0,.10)",
+        fontWeight: 900,
+        fontSize: 16,
+        outline: "none",
+        background: "white",
+      },
+      select: {
+        width: 150,
+        padding: compact ? "8px 10px" : "10px 12px",
+        borderRadius: 999,
+        border: "1px solid rgba(0,0,0,.10)",
+        fontWeight: 900,
+        color: "#1c4ed8",
+        background: "white",
+        outline: "none",
+      },
+      pill: {
+        display: "inline-block",
+        padding: compact ? "8px 12px" : "10px 14px",
+        borderRadius: 999,
+        border: "1px solid rgba(0,0,0,.10)",
+        fontWeight: 900,
+        color: "#1c4ed8",
+        background: "white",
+        minWidth: 120,
+        textAlign: "center",
+      },
+      trashBtn: {
+        width: 44,
+        height: 44,
+        borderRadius: 16,
+        border: "1px solid rgba(0,0,0,.10)",
+        background: "white",
+        cursor: "pointer",
+        fontSize: 18,
+      },
 
-    // ✅ changed: controls drop under title on mobile and always wrap
-    controls: {
-      display: "flex",
-      gap: 8,
-      flexWrap: "wrap",
-      justifyContent: isNarrow ? "flex-start" : "flex-end",
-      alignItems: "center",
-      width: isNarrow ? "100%" : "auto",
-    },
+      addBarWrap: { padding: compact ? 10 : 12, paddingTop: 0 },
+      addBarInner: { width: "min(560px, 100%)", margin: "0 auto" },
+      addBar: {
+        width: "100%",
+        padding: compact ? "10px 12px" : "12px 14px",
+        borderRadius: 18,
+        border: "1px dashed rgba(28,78,216,.35)",
+        background: "rgba(79,124,255,.08)",
+        color: "#1c4ed8",
+        fontWeight: 950,
+        cursor: "pointer",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 10,
+      },
 
-    btn: {
-      border: "1px solid rgba(0,0,0,.10)",
-      background: "rgba(255,255,255,.92)",
-      padding: "10px 12px",
-      borderRadius: 999,
-      fontWeight: 800,
-      color: "#1c4ed8",
-      boxShadow: "0 8px 18px rgba(16,24,40,.06)",
-      cursor: "pointer",
-      display: "inline-flex",
-      gap: 6,
-      alignItems: "center",
-      whiteSpace: "nowrap",
-    },
-    btnPrimary: {
-      background: "linear-gradient(135deg,#4f7cff,#32d2aa)",
-      color: "white",
-      border: "none",
-    },
+      totalsCard: {
+        marginTop: compact ? 10 : 14,
+        background: "rgba(255,255,255,.92)",
+        border: "1px solid rgba(16,24,40,.08)",
+        borderRadius: 22,
+        overflow: "hidden",
+        boxShadow: "0 18px 40px rgba(16,24,40,.08)",
+      },
+      totalsHeader: {
+        padding: compact ? "12px 14px" : "14px 16px",
+        fontWeight: 950,
+        fontSize: compact ? 16 : 18,
+        color: "#0b1220",
+        background: "rgba(79,124,255,.10)",
+      },
+      totalsItem: {
+        padding: compact ? "10px 14px" : "12px 16px",
+        display: "flex",
+        justifyContent: "space-between",
+        fontWeight: 900,
+        borderTop: "1px solid rgba(16,24,40,.06)",
+      },
+      weekTotal: {
+        padding: compact ? "12px 14px" : "14px 16px",
+        display: "flex",
+        justifyContent: "space-between",
+        fontWeight: 950,
+        fontSize: compact ? 16 : 18,
+        borderTop: "1px solid rgba(16,24,40,.06)",
+        background: "rgba(50,210,170,.10)",
+      },
 
-    tabsWrap: {
-      marginTop: 12,
-      background: "linear-gradient(135deg,#4f7cff,#6a5cff)",
-      borderRadius: 18,
-      padding: 8,
-      overflowX: "auto",
-    },
-    tabsRow: { display: "flex", gap: 8, minWidth: 520 },
-    chip: (active) => ({
-      border: "none",
-      borderRadius: 16,
-      padding: "10px 12px",
-      fontWeight: 900,
-      background: active ? "rgba(255,255,255,.95)" : "rgba(255,255,255,.18)",
-      color: active ? "#0b1220" : "rgba(255,255,255,.92)",
-      minWidth: 86,
-      cursor: "pointer",
-      textAlign: "left",
-    }),
-    chipTop: { fontSize: 14, fontWeight: 900 },
-    chipSub: { fontSize: 12, opacity: 0.85, fontWeight: 800 },
+      toast: {
+        position: "fixed",
+        left: "50%",
+        bottom: 20,
+        transform: "translateX(-50%)",
+        background: "rgba(14,20,40,.92)",
+        color: "white",
+        padding: "10px 14px",
+        borderRadius: 999,
+        fontWeight: 900,
+        zIndex: 9999,
+        boxShadow: "0 16px 40px rgba(0,0,0,.25)",
+      },
 
-    sectionCard: {
-      marginTop: 14,
-      background: "rgba(255,255,255,.92)",
-      border: "1px solid rgba(16,24,40,.08)",
-      borderRadius: 22,
-      overflow: "hidden",
-      boxShadow: "0 18px 40px rgba(16,24,40,.08)",
-    },
-    sectionHeader: {
-      padding: "14px 16px",
-      color: "white",
-      fontWeight: 950,
-      fontSize: 20,
-      background: "linear-gradient(135deg,#4f7cff,#32d2aa)",
-    },
-
-    tableWrap: { padding: 12, overflowX: "auto" },
-    table: { width: "100%", borderCollapse: "separate", borderSpacing: "0 10px", minWidth: 640 },
-    th: { textAlign: "left", fontSize: 13, opacity: 0.7, fontWeight: 900, padding: "0 10px 6px 10px" },
-    trRow: { background: "rgba(250,252,255,.9)", border: "1px solid rgba(0,0,0,.06)" },
-    td: { padding: 10, verticalAlign: "middle" },
-
-    nameInput: {
-      width: 200,
-      maxWidth: "200px",
-      padding: "12px 14px",
-      borderRadius: 18,
-      border: "1px solid rgba(0,0,0,.10)",
-      fontWeight: 900,
-      fontSize: 16,
-      outline: "none",
-      background: "white",
-    },
-    select: {
-      width: 150,
-      padding: "10px 12px",
-      borderRadius: 999,
-      border: "1px solid rgba(0,0,0,.10)",
-      fontWeight: 900,
-      color: "#1c4ed8",
-      background: "white",
-      outline: "none",
-    },
-    pill: {
-      display: "inline-block",
-      padding: "10px 14px",
-      borderRadius: 999,
-      border: "1px solid rgba(0,0,0,.10)",
-      fontWeight: 900,
-      color: "#1c4ed8",
-      background: "white",
-      minWidth: 120,
-      textAlign: "center",
-    },
-    trashBtn: {
-      width: 44,
-      height: 44,
-      borderRadius: 16,
-      border: "1px solid rgba(0,0,0,.10)",
-      background: "white",
-      cursor: "pointer",
-      fontSize: 18,
-    },
-
-    addBarWrap: { padding: 12, paddingTop: 0 },
-    addBarInner: { width: "min(560px, 100%)", margin: "0 auto" },
-    addBar: {
-      width: "100%",
-      padding: "12px 14px",
-      borderRadius: 18,
-      border: "1px dashed rgba(28,78,216,.35)",
-      background: "rgba(79,124,255,.08)",
-      color: "#1c4ed8",
-      fontWeight: 950,
-      cursor: "pointer",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      gap: 10,
-    },
-
-    totalsCard: {
-      marginTop: 14,
-      background: "rgba(255,255,255,.92)",
-      border: "1px solid rgba(16,24,40,.08)",
-      borderRadius: 22,
-      overflow: "hidden",
-      boxShadow: "0 18px 40px rgba(16,24,40,.08)",
-    },
-    totalsHeader: {
-      padding: "14px 16px",
-      fontWeight: 950,
-      fontSize: 18,
-      color: "#0b1220",
-      background: "rgba(79,124,255,.10)",
-    },
-    totalsItem: {
-      padding: "12px 16px",
-      display: "flex",
-      justifyContent: "space-between",
-      fontWeight: 900,
-      borderTop: "1px solid rgba(16,24,40,.06)",
-    },
-    weekTotal: {
-      padding: "14px 16px",
-      display: "flex",
-      justifyContent: "space-between",
-      fontWeight: 950,
-      fontSize: 18,
-      borderTop: "1px solid rgba(16,24,40,.06)",
-      background: "rgba(50,210,170,.10)",
-    },
-
-    toast: {
-      position: "fixed",
-      left: "50%",
-      bottom: 20,
-      transform: "translateX(-50%)",
-      background: "rgba(14,20,40,.92)",
-      color: "white",
-      padding: "10px 14px",
-      borderRadius: 999,
-      fontWeight: 900,
-      zIndex: 9999,
-      boxShadow: "0 16px 40px rgba(0,0,0,.25)",
-    },
-
-    modalOverlay: {
-      position: "fixed",
-      inset: 0,
-      background: "rgba(0,0,0,.35)",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      padding: 16,
-      zIndex: 9999,
-    },
-    modal: {
-      width: "min(520px, 100%)",
-      background: "white",
-      borderRadius: 22,
-      border: "1px solid rgba(0,0,0,.10)",
-      boxShadow: "0 24px 70px rgba(0,0,0,.30)",
-      overflow: "hidden",
-    },
-    modalHeader: {
-      padding: "14px 16px",
-      fontWeight: 950,
-      background: "linear-gradient(135deg,#4f7cff,#32d2aa)",
-      color: "white",
-    },
-    modalBody: { padding: 16 },
-    modalRow: { display: "flex", gap: 10, flexWrap: "wrap" },
-    modalSelect: {
-      flex: "1 1 160px",
-      padding: "12px 12px",
-      borderRadius: 16,
-      border: "1px solid rgba(0,0,0,.10)",
-      fontWeight: 900,
-      outline: "none",
-    },
-    modalActions: {
-      display: "flex",
-      gap: 10,
-      justifyContent: "flex-end",
-      padding: 16,
-      borderTop: "1px solid rgba(0,0,0,.08)",
-      background: "rgba(79,124,255,.06)",
-    },
-
-    storeInput: {
-      width: "min(420px, 100%)",
-      maxWidth: 420,
-      fontSize: 20,
-      fontWeight: 950,
-      border: "1px solid rgba(0,0,0,.10)",
-      borderRadius: 16,
-      padding: "10px 12px",
-      outline: "none",
-    },
-  }), [isNarrow]);
+      modalOverlay: {
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,.35)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 16,
+        zIndex: 9999,
+      },
+      modal: {
+        width: "min(520px, 100%)",
+        background: "white",
+        borderRadius: 22,
+        border: "1px solid rgba(0,0,0,.10)",
+        boxShadow: "0 24px 70px rgba(0,0,0,.30)",
+        overflow: "hidden",
+      },
+      modalHeader: {
+        padding: "14px 16px",
+        fontWeight: 950,
+        background: "linear-gradient(135deg,#4f7cff,#32d2aa)",
+        color: "white",
+      },
+      modalBody: { padding: 16 },
+      modalRow: { display: "flex", gap: 10, flexWrap: "wrap" },
+      modalSelect: {
+        flex: "1 1 160px",
+        padding: "12px 12px",
+        borderRadius: 16,
+        border: "1px solid rgba(0,0,0,.10)",
+        fontWeight: 900,
+        outline: "none",
+      },
+      modalActions: {
+        display: "flex",
+        gap: 10,
+        justifyContent: "flex-end",
+        padding: 16,
+        borderTop: "1px solid rgba(0,0,0,.08)",
+        background: "rgba(79,124,255,.06)",
+      },
+    };
+  }, [isManager]);
 
   return (
     <div style={styles.page}>
       <div style={styles.shell}>
-        {/* Top header */}
+        {/* Header */}
         <div style={styles.topCard}>
           <div style={styles.topRow}>
             <div style={styles.brandRow}>
@@ -695,35 +767,20 @@ function App() {
               </div>
             </div>
 
-            {/* ✅ Employees do NOT get Prev/Next */}
             <div style={styles.controls}>
               {isManager ? (
                 <>
                   <button style={styles.btn} onClick={onPrevWeek}>◀ Prev</button>
                   <button style={styles.btn} onClick={onNextWeek}>Next ▶</button>
                   <button style={{ ...styles.btn, ...styles.btnPrimary }} onClick={saveNow}>Save</button>
-                  <button style={styles.btn} onClick={shareReadOnlyLink}>Share Link</button>
+                  <button style={styles.btn} onClick={shareReadOnlyLink}>Share (View Only)</button>
                 </>
-              ) : (
-                <button
-                  style={styles.btn}
-                  onClick={async () => {
-                    try {
-                      await navigator.clipboard.writeText(viewerLink);
-                      showToast("Viewer link copied ✅");
-                    } catch {
-                      window.prompt("Copy this link:", viewerLink);
-                    }
-                  }}
-                >
-                  Copy Link
-                </button>
-              )}
+              ) : null}
             </div>
           </div>
         </div>
 
-        {/* Tabs (kept; pinned week anyway) */}
+        {/* Tabs */}
         <div style={styles.tabsWrap}>
           <div style={styles.tabsRow}>
             <button style={styles.chip(activeTab === "all")} onClick={() => setActiveTab("all")}>
@@ -743,7 +800,7 @@ function App() {
           </div>
         </div>
 
-        {/* Full week section */}
+        {/* Schedule */}
         <div style={styles.sectionCard}>
           <div style={styles.sectionHeader}>Full Week</div>
 
@@ -850,7 +907,7 @@ function App() {
           ) : null}
         </div>
 
-        {/* Weekly totals */}
+        {/* Totals */}
         <div style={styles.totalsCard}>
           <div style={styles.totalsHeader}>Weekly Totals</div>
           {schedule.employees.map((e) => {
@@ -868,7 +925,13 @@ function App() {
           </div>
         </div>
 
-        {/* ✅ REMOVED: Manager link / Viewer link / Tip block */}
+        <div style={{ marginTop: 14, fontSize: 13, opacity: 0.75 }}>
+          <div><b>Manager link:</b> {managerLink}</div>
+          <div><b>Viewer base (no snapshot):</b> {viewerBase}</div>
+          <div style={{ marginTop: 6, opacity: 0.85 }}>
+            Note: Share uses a snapshot link so employees see the same schedule even on their phones.
+          </div>
+        </div>
       </div>
 
       {toast ? <div style={styles.toast}>{toast}</div> : null}
@@ -965,23 +1028,50 @@ function CustomShiftModal({ styles, onClose, onApply }) {
           </div>
 
           <div style={styles.modalRow}>
-            <select style={styles.modalSelect} value={startMin} onChange={(e) => setStartMin(Number(e.target.value))}>
-              {options.map((m) => <option key={m} value={m}>{minutesToLabel(m)}</option>)}
+            <select
+              style={styles.modalSelect}
+              value={startMin}
+              onChange={(e) => setStartMin(Number(e.target.value))}
+            >
+              {options.map((m) => (
+                <option key={m} value={m}>
+                  {minutesToLabel(m)}
+                </option>
+              ))}
             </select>
 
-            <select style={styles.modalSelect} value={endMin} onChange={(e) => setEndMin(Number(e.target.value))}>
-              {options.filter((m) => m > startMin).map((m) => <option key={m} value={m}>{minutesToLabel(m)}</option>)}
+            <select
+              style={styles.modalSelect}
+              value={endMin}
+              onChange={(e) => setEndMin(Number(e.target.value))}
+            >
+              {options
+                .filter((m) => m > startMin)
+                .map((m) => (
+                  <option key={m} value={m}>
+                    {minutesToLabel(m)}
+                  </option>
+                ))}
             </select>
           </div>
 
           <div style={{ marginTop: 12, fontWeight: 950, fontSize: 16 }}>
-            Preview: <span style={{ color: "#1c4ed8" }}>{shiftLabelFromMinutes(startMin, endMin)}</span>
+            Preview:{" "}
+            <span style={{ color: "#1c4ed8" }}>
+              {shiftLabelFromMinutes(startMin, endMin)}
+            </span>
           </div>
         </div>
 
         <div style={styles.modalActions}>
-          <button style={styles.btn} onClick={onClose} type="button">Cancel</button>
-          <button style={{ ...styles.btn, ...styles.btnPrimary }} onClick={() => onApply(startMin, endMin)} type="button">
+          <button style={styles.btn} onClick={onClose} type="button">
+            Cancel
+          </button>
+          <button
+            style={{ ...styles.btn, ...styles.btnPrimary }}
+            onClick={() => onApply(startMin, endMin)}
+            type="button"
+          >
             Apply
           </button>
         </div>
@@ -990,5 +1080,5 @@ function CustomShiftModal({ styles, onClose, onApply }) {
   );
 }
 
-/** ✅ React 17 compatible mount */
+/** React 17 mount */
 ReactDOM.render(<App />, document.getElementById("root"));
