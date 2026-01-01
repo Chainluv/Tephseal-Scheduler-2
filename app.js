@@ -925,15 +925,6 @@ function App() {
           </div>
         </div>
 
-        <div style={{ marginTop: 14, fontSize: 13, opacity: 0.75 }}>
-          <div><b>Manager link:</b> {managerLink}</div>
-          <div><b>Viewer base (no snapshot):</b> {viewerBase}</div>
-          <div style={{ marginTop: 6, opacity: 0.85 }}>
-            Note: Share uses a snapshot link so employees see the same schedule even on their phones.
-          </div>
-        </div>
-      </div>
-
       {toast ? <div style={styles.toast}>{toast}</div> : null}
 
       {customModal ? (
