@@ -99,7 +99,9 @@ function buildSnapshot(schedule, storeId, weekISO) {
     storeName: schedule?.meta?.storeName || "Schedule",
     employees: (schedule?.employees || []).map((e) => ({
       name: e.name || "",
-      shifts: Array.isArray(e.shifts) ? e.shifts.slice(0, 7) : ["Off","Off","Off","Off","Off","Off","Off"],
+      shifts: Array.isArray(e.shifts)
+        ? e.shifts.slice(0, 7)
+        : ["Off", "Off", "Off", "Off", "Off", "Off", "Off"],
     })),
   };
 }
@@ -225,7 +227,7 @@ function shiftHours(shiftLabel) {
   if (!r) return 0;
   let { startMin, endMin } = r;
   startMin = clamp(startMin, 480, 1200); // 8AM
-  endMin = clamp(endMin, 480, 1200);     // 8PM
+  endMin = clamp(endMin, 480, 1200); // 8PM
   return Math.max(0, endMin - startMin) / 60;
 }
 
@@ -243,11 +245,8 @@ function App() {
   const isSnapshotView = Boolean(dataParam);
   const isManager = !isSnapshotView && url.searchParams.get("manager") === "1";
 
-  // If a week is provided, show that week; otherwise current week.
   const initialMonday = useMemo(() => {
-    const base = weekParam
-      ? startOfWeekMonday(parseISODate(weekParam))
-      : startOfWeekMonday(new Date());
+    const base = weekParam ? startOfWeekMonday(parseISODate(weekParam)) : startOfWeekMonday(new Date());
     return base;
   }, [weekParam]);
 
@@ -255,7 +254,7 @@ function App() {
   const weekISO = useMemo(() => toISODate(monday), [monday]);
 
   const [schedule, setSchedule] = useState(() => {
-    // If viewing a snapshot, decode it and use it (read-only)
+    // Snapshot view: decode and use it (read-only)
     if (dataParam) {
       try {
         const decoded = safeB64Decode(dataParam);
@@ -274,7 +273,6 @@ function App() {
           })),
         };
       } catch {
-        // If decoding fails, fall back to empty week (still viewer)
         return defaultSchedule(storeId, weekISO);
       }
     }
@@ -291,13 +289,12 @@ function App() {
   const [activeTab, setActiveTab] = useState("all");
 
   useEffect(() => {
-    if (isSnapshotView) return; // snapshot view shouldn't load/overwrite local storage
+    if (isSnapshotView) return; // do not overwrite snapshot view
 
     const existing = loadScheduleLocal(storeId, weekISO);
     if (existing) {
       setSchedule(existing);
     } else {
-      // only managers auto-copy forward
       const prevISO = toISODate(addWeeks(monday, -1));
       const prev = loadScheduleLocal(storeId, prevISO);
       if (prev && isManager) {
@@ -308,7 +305,7 @@ function App() {
         setSchedule(defaultSchedule(storeId, weekISO));
       }
     }
-  }, [storeId, weekISO, isManager, isSnapshotView]);
+  }, [storeId, weekISO, isManager, isSnapshotView, monday]);
 
   useEffect(() => {
     setSchedule((prev) => ({
@@ -340,8 +337,6 @@ function App() {
   }
 
   async function shareReadOnlyLink() {
-    // Build a snapshot viewer URL (read-only), pinned to this week,
-    // and embeds the schedule so employees see the same data.
     const snap = buildSnapshot(schedule, storeId, weekISO);
     const encoded = safeB64Encode(JSON.stringify(snap));
 
@@ -433,19 +428,16 @@ function App() {
 
   const storeName = schedule.meta?.storeName || "Murdock Hyundai";
 
-  // Links for display/debug
-  const viewerBase = `${window.location.origin}${window.location.pathname}?store=${encodeURIComponent(storeId)}&week=${encodeURIComponent(weekISO)}`;
-  const managerLink = `${window.location.origin}${window.location.pathname}?store=${encodeURIComponent(storeId)}&manager=1`;
-
   /** Styles */
   const styles = useMemo(() => {
-    const compact = isManager; // make header smaller for manager only
+    const compact = isManager; // compact header in manager only
     return {
       page: {
         minHeight: "100vh",
         background: "linear-gradient(180deg,#f4fbff 0%, #eef4ff 40%, #f7fbff 100%)",
         padding: compact ? "12px" : "16px",
-        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+        fontFamily:
+          '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
         color: "#0b1220",
       },
       shell: { maxWidth: 980, margin: "0 auto" },
@@ -738,7 +730,6 @@ function App() {
   return (
     <div style={styles.page}>
       <div style={styles.shell}>
-        {/* Header */}
         <div style={styles.topCard}>
           <div style={styles.topRow}>
             <div style={styles.brandRow}>
@@ -770,17 +761,24 @@ function App() {
             <div style={styles.controls}>
               {isManager ? (
                 <>
-                  <button style={styles.btn} onClick={onPrevWeek}>◀ Prev</button>
-                  <button style={styles.btn} onClick={onNextWeek}>Next ▶</button>
-                  <button style={{ ...styles.btn, ...styles.btnPrimary }} onClick={saveNow}>Save</button>
-                  <button style={styles.btn} onClick={shareReadOnlyLink}>Share (View Only)</button>
+                  <button style={styles.btn} onClick={onPrevWeek}>
+                    ◀ Prev
+                  </button>
+                  <button style={styles.btn} onClick={onNextWeek}>
+                    Next ▶
+                  </button>
+                  <button style={{ ...styles.btn, ...styles.btnPrimary }} onClick={saveNow}>
+                    Save
+                  </button>
+                  <button style={styles.btn} onClick={shareReadOnlyLink}>
+                    Share (View Only)
+                  </button>
                 </>
               ) : null}
             </div>
           </div>
         </div>
 
-        {/* Tabs */}
         <div style={styles.tabsWrap}>
           <div style={styles.tabsRow}>
             <button style={styles.chip(activeTab === "all")} onClick={() => setActiveTab("all")}>
@@ -793,14 +791,15 @@ function App() {
               return (
                 <button key={i} style={styles.chip(active)} onClick={() => setActiveTab(String(i))}>
                   <div style={styles.chipTop}>{chip.dow}</div>
-                  <div style={styles.chipSub}>{chip.mon} {chip.day}</div>
+                  <div style={styles.chipSub}>
+                    {chip.mon} {chip.day}
+                  </div>
                 </button>
               );
             })}
           </div>
         </div>
 
-        {/* Schedule */}
         <div style={styles.sectionCard}>
           <div style={styles.sectionHeader}>Full Week</div>
 
@@ -813,7 +812,10 @@ function App() {
                     const chip = formatDayChip(d);
                     return (
                       <th key={i} style={styles.th}>
-                        {chip.dow} <span style={{ opacity: 0.6, fontWeight: 800 }}>{chip.mon} {chip.day}</span>
+                        {chip.dow}{" "}
+                        <span style={{ opacity: 0.6, fontWeight: 800 }}>
+                          {chip.mon} {chip.day}
+                        </span>
                       </th>
                     );
                   })}
@@ -867,7 +869,11 @@ function App() {
                               }}
                             >
                               {isCustom ? <option value={value}>{value}</option> : null}
-                              {COMMON_SHIFTS.map((s) => <option key={s} value={s}>{s}</option>)}
+                              {COMMON_SHIFTS.map((s) => (
+                                <option key={s} value={s}>
+                                  {s}
+                                </option>
+                              ))}
                               <option value="__CUSTOM__">Custom…</option>
                             </select>
                           </td>
@@ -907,7 +913,6 @@ function App() {
           ) : null}
         </div>
 
-        {/* Totals */}
         <div style={styles.totalsCard}>
           <div style={styles.totalsHeader}>Weekly Totals</div>
           {schedule.employees.map((e) => {
@@ -924,6 +929,7 @@ function App() {
             <div>{weekTotal}</div>
           </div>
         </div>
+      </div>
 
       {toast ? <div style={styles.toast}>{toast}</div> : null}
 
@@ -1019,11 +1025,7 @@ function CustomShiftModal({ styles, onClose, onApply }) {
           </div>
 
           <div style={styles.modalRow}>
-            <select
-              style={styles.modalSelect}
-              value={startMin}
-              onChange={(e) => setStartMin(Number(e.target.value))}
-            >
+            <select style={styles.modalSelect} value={startMin} onChange={(e) => setStartMin(Number(e.target.value))}>
               {options.map((m) => (
                 <option key={m} value={m}>
                   {minutesToLabel(m)}
@@ -1031,11 +1033,7 @@ function CustomShiftModal({ styles, onClose, onApply }) {
               ))}
             </select>
 
-            <select
-              style={styles.modalSelect}
-              value={endMin}
-              onChange={(e) => setEndMin(Number(e.target.value))}
-            >
+            <select style={styles.modalSelect} value={endMin} onChange={(e) => setEndMin(Number(e.target.value))}>
               {options
                 .filter((m) => m > startMin)
                 .map((m) => (
@@ -1047,10 +1045,7 @@ function CustomShiftModal({ styles, onClose, onApply }) {
           </div>
 
           <div style={{ marginTop: 12, fontWeight: 950, fontSize: 16 }}>
-            Preview:{" "}
-            <span style={{ color: "#1c4ed8" }}>
-              {shiftLabelFromMinutes(startMin, endMin)}
-            </span>
+            Preview: <span style={{ color: "#1c4ed8" }}>{shiftLabelFromMinutes(startMin, endMin)}</span>
           </div>
         </div>
 
@@ -1058,11 +1053,7 @@ function CustomShiftModal({ styles, onClose, onApply }) {
           <button style={styles.btn} onClick={onClose} type="button">
             Cancel
           </button>
-          <button
-            style={{ ...styles.btn, ...styles.btnPrimary }}
-            onClick={() => onApply(startMin, endMin)}
-            type="button"
-          >
+          <button style={{ ...styles.btn, ...styles.btnPrimary }} onClick={() => onApply(startMin, endMin)} type="button">
             Apply
           </button>
         </div>
